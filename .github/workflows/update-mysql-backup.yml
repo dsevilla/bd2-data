@@ -1,0 +1,71 @@
+name: Update MySQL Backup
+
+on:
+  schedule:
+    # Run on the first day of every month at 2:00 AM UTC
+    - cron: '0 2 1 * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  update-mysql-backup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Allow the workflow to write to the repository
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read version from config
+        run: |
+          VERSION=$(grep '^version:' .github/config.yml | cut -d'"' -f2)
+          echo "IMAGE_VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Set up Git configuration
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      - name: Run MySQL backup generation
+        run: |
+          cd es.stackoverflow/mysql
+          sudo sh ./ubuntu-script.sh
+
+      - name: Add new backup files to git
+        run: |
+          cd es.stackoverflow/mysql
+          git add es.stackoverflow.sql.gz.*
+
+      - name: Commit and push changes
+        run: |
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update MySQL backup files - $(date +'%Y-%m-%d')."
+            git push origin main
+          fi
+
+      - name: Upload as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mysql-backup-${{ env.IMAGE_VERSION }}
+          files: es.stackoverflow/mysql/es.stackoverflow.sql.gz
+
+      # - name: 🔐 Log in to DockerHub
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.DOCKERHUB_USERNAME }}
+      #     password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # - name: 🔧 Set up Docker Buildx
+      #   uses: docker/setup-buildx-action@v3
+
+      # - name: 📦 Build and Push Multi-Arch Docker Image
+      #   uses: docker/build-push-action@v6
+      #   with:
+      #     context: ./es.stackoverflow/mysql
+      #     push: true
+      #     platforms: linux/amd64,linux/arm64
+      #     tags: dsevilla/mysql-stackoverflow-dump:${{ env.IMAGE_VERSION }}

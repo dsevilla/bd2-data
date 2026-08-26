@@ -1,0 +1,63 @@
+name: Update Parquet Files
+
+on:
+  schedule:
+    # Run on the first day of every month at 2:00 AM UTC
+    - cron: '0 2 1 * *'
+  workflow_dispatch:
+
+jobs:
+  update-parquet-files:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read version from config
+        id: read_version
+        run: |
+          VERSION=$(grep '^version:' .github/config.yml | cut -d'"' -f2)
+          echo "IMAGE_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG=parquet-files-$VERSION" >> $GITHUB_ENV
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up Python virtual environment
+        run: |
+          cd es.stackoverflow/parquet
+          python3 -m venv .venv
+          . .venv/bin/activate
+
+          pip3 install ipython nbconvert
+
+      - name: Run notebook to generate parquet files
+        working-directory: es.stackoverflow/parquet
+        run: |
+          . .venv/bin/activate
+          ipython3 gen_parquet.ipynb
+
+      - name: Package parquet and pb files
+        working-directory: es.stackoverflow/parquet
+        run: |
+          set -e
+          tar -zcf es.stackoverflow.parquet.tar.gz {Posts,Comments,Users,Votes,Tags}.parquet *.pb
+
+      - name: Package CSV files
+        working-directory: es.stackoverflow/parquet
+        run: |
+          set -e
+          tar -zcf es.stackoverflow.csv.tar.gz *.csv
+
+      - name: Upload parquet files as release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: parquet-files-${{ env.IMAGE_VERSION }}
+          files: |
+            es.stackoverflow/parquet/es.stackoverflow.parquet.tar.gz
+            es.stackoverflow/parquet/es.stackoverflow.csv.tar.gz
+            es.stackoverflow/parquet/*.parquet
+            es.stackoverflow/parquet/*.pb
