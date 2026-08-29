@@ -1,0 +1,13 @@
+services:
+
+  preprocess:
+    build: .
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      DOWNLOAD: "${DOWNLOAD:-1}"
+      FORCE_DOWNLOAD: "${FORCE_DOWNLOAD:-0}"
+    user: "${DUID}:${DGID}"
+    #stdin_open: true # docker run -i
+    tty: true        # docker run -t

@@ -1,0 +1,48 @@
+name: Prepare es.stackoverflow data 26-27
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare-es-stackoverflow-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install preprocessing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends curl parallel p7zip-full
+
+      - name: Download and preprocess source data
+        working-directory: es.stackoverflow/preprocess
+        env:
+          FORCE_DOWNLOAD: '1'
+        run: sh preprocess.sh
+
+      - name: Package processed XML and CSV files
+        working-directory: es.stackoverflow/preprocess
+        run: |
+          set -eu
+          tar -czf es.stackoverflow.xml.tar.gz -C data \
+            Posts.xml Votes.xml Users.xml Tags.xml Comments.xml
+          tar -czf es.stackoverflow.csv.tar.gz -C data \
+            Posts.csv Votes.csv Users.csv Tags.csv Comments.csv
+
+      - name: Upload data release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: es.stackoverflow.data-26-27
+          name: es.stackoverflow.data-26-27
+          files: |
+            es.stackoverflow/preprocess/es.stackoverflow.xml.tar.gz
+            es.stackoverflow/preprocess/es.stackoverflow.csv.tar.gz
