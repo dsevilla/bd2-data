@@ -19,9 +19,10 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read version from config
+        id: read_version
         run: |
           VERSION=$(grep '^version:' .github/config.yml | cut -d'"' -f2)
-          echo "IMAGE_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate SQLite backup
         run: |
@@ -30,7 +31,7 @@ jobs:
           cat es.stackoverflow.db.xz.00 es.stackoverflow.db.xz.01 | xz -d | gzip -9 > es.stackoverflow.db.gz
 
       - name: Upload as release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: sqlite-backup-${{ env.IMAGE_VERSION }}
+          tag_name: sqlite-backup-${{ steps.read_version.outputs.tag }}
           files: es.stackoverflow/es.stackoverflow.db.gz

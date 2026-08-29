@@ -14,14 +14,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read version from config
+        id: read_version
         run: |
           VERSION=$(grep '^version:' .github/config.yml | cut -d'"' -f2)
-          echo "IMAGE_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up Git configuration
         run: |
@@ -48,9 +49,9 @@ jobs:
           fi
 
       - name: Upload as release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: mysql-backup-${{ env.IMAGE_VERSION }}
+          tag_name: mysql-backup-${{ steps.read_version.outputs.tag }}
           files: es.stackoverflow/mysql/es.stackoverflow.sql.gz
 
       # - name: 🔐 Log in to DockerHub
@@ -68,4 +69,4 @@ jobs:
       #     context: ./es.stackoverflow/mysql
       #     push: true
       #     platforms: linux/amd64,linux/arm64
-      #     tags: dsevilla/mysql-stackoverflow-dump:${{ env.IMAGE_VERSION }}
+      #     tags: dsevilla/mysql-stackoverflow-dump:${{ steps.read_version.outputs.tag }}

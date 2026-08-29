@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -25,7 +25,7 @@ jobs:
           cat libros.tar.gz.* > libros.tar.gz
 
       - name: Upload as release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: libros-tar-gz
           files: tcdm/libros.tar.gz
