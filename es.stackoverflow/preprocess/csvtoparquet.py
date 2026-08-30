@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
 """Convert the prepared Stack Exchange CSV files to typed Parquet files.
 
 The XML-to-CSV step intentionally discovers the columns present in the dump.
 This second step applies the explicit, teaching-friendly schemas below.  It
 reads CSV incrementally and writes Parquet incrementally, so it does not need
-to hold a complete table in memory.
+to hold a complete table in memory.  The independent tables are converted in
+parallel using worker processes.
 
 Example:
 
@@ -18,15 +18,18 @@ from __future__ import annotations
 
 import argparse
 import csv
+import multiprocessing as mp
+import os
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Mapping
+from typing import TypeAlias, cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
-
 
 # ---------------------------------------------------------------------------
 # Explicit schemas
@@ -279,6 +282,9 @@ class TableSpec:
     zero_defaults: Mapping[str, int]
 
 
+TableTask: TypeAlias = tuple[str, Path, Path]
+
+
 # The names here must match the CSV files produced by preprocess.sh.
 TABLES: dict[str, TableSpec] = {
     "Posts": TableSpec(
@@ -329,7 +335,8 @@ def _all_nullable_schema(schema: pa.Schema) -> pa.Schema:
 def _read_header(path: Path) -> list[str]:
     with path.open("r", encoding="utf-8-sig", newline="") as source:
         try:
-            return next(csv.reader(source))
+            rows: Iterator[list[str]] = csv.reader(source)
+            return next(rows)
         except StopIteration as exc:
             raise ValueError(f"CSV file is empty: {path}") from exc
 
@@ -339,26 +346,28 @@ def _validate_header(
     schema: pa.Schema,
     zero_defaults: Mapping[str, int],
 ) -> None:
-    actual = _read_header(path)
+    actual: list[str] = _read_header(path)
     if len(actual) != len(set(actual)):
         raise ValueError(f"CSV header contains duplicate columns: {path}")
 
-    expected = set(schema.names)
-    actual_set = set(actual)
-    missing = [name for name in schema.names if name not in actual_set]
-    extra = [name for name in actual if name not in expected]
+    expected: set[str] = set(schema.names)
+    actual_set: set[str] = set(actual)
+    missing: list[str] = [name for name in schema.names if name not in actual_set]
+    extra: list[str] = [name for name in actual if name not in expected]
     # An optional attribute may be absent from every XML row and therefore
     # from the discovered CSV header.  Defaulted numeric columns are also
     # allowed to be absent: they become an all-null input column and are then
     # filled with zero below.  Other missing non-nullable fields indicate a
     # broken/incompatible input and must fail loudly.
-    nullable_fields = {
+    nullable_fields: set[str] = {
         field.name for field in schema if field.nullable
     }
-    allowed_missing = nullable_fields | set(zero_defaults)
-    missing_required = [name for name in missing if name not in allowed_missing]
+    allowed_missing: set[str] = nullable_fields | set(zero_defaults)
+    missing_required: list[str] = [
+        name for name in missing if name not in allowed_missing
+    ]
     if missing_required or extra:
-        details = []
+        details: list[str] = []
         if missing_required:
             details.append(
                 f"missing required columns: {', '.join(missing_required)}"
@@ -373,24 +382,26 @@ def _normalise_batch(
     schema: pa.Schema,
     zero_defaults: Mapping[str, int],
 ) -> pa.Table:
-    table = pa.Table.from_batches([batch])
+    table: pa.Table = pa.Table.from_batches([batch])
 
     for name, default in zero_defaults.items():
-        field = schema.field(name)
-        array = pc.fill_null(table[name], pa.scalar(default, type=field.type))
+        field: pa.Field = schema.field(name)
+        array: pa.Array = pc.fill_null(
+            table[name], pa.scalar(default, type=field.type)
+        )
         table = table.set_column(table.schema.get_field_index(name), name, array)
 
     # This also verifies that required fields really contain no nulls and that
     # values fit in the explicitly chosen integer/timestamp types.
-    result = table.select(schema.names).cast(schema, safe=True)
+    result: pa.Table = table.select(schema.names).cast(schema, safe=True)
     result.validate(full=True)
     return result
 
 
 def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
-    spec = TABLES[name]
-    input_path = input_dir / f"{name}.csv"
-    output_path = output_dir / f"{name}.parquet"
+    spec: TableSpec = TABLES[name]
+    input_path: Path = input_dir / f"{name}.csv"
+    output_path: Path = output_dir / f"{name}.parquet"
 
     if not input_path.is_file():
         raise FileNotFoundError(f"Input CSV not found: {input_path}")
@@ -401,18 +412,21 @@ def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
             f"PyArrow was built without {PARQUET_COMPRESSION} compression support"
         )
 
-    read_options = pacsv.ReadOptions(
-        use_threads=True,
+    read_options: pacsv.ReadOptions = pacsv.ReadOptions(
+        # Tables are converted in separate worker processes.  Keeping this
+        # reader single-threaded avoids oversubscribing the CPU when several
+        # Brotli writers are active at once.
+        use_threads=False,
         block_size=CSV_BLOCK_SIZE,
         encoding="utf-8",
     )
-    parse_options = pacsv.ParseOptions(
+    parse_options: pacsv.ParseOptions = pacsv.ParseOptions(
         delimiter=",",
         quote_char='"',
         double_quote=True,
         newlines_in_values=False,
     )
-    convert_options = pacsv.ConvertOptions(
+    convert_options: pacsv.ConvertOptions = pacsv.ConvertOptions(
         column_types=_all_nullable_schema(spec.schema),
         include_columns=spec.schema.names,
         include_missing_columns=True,
@@ -422,15 +436,16 @@ def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
         check_utf8=True,
     )
 
-    reader = pacsv.open_csv(
+    reader: Iterator[pa.RecordBatch] = pacsv.open_csv(
         input_path,
         read_options=read_options,
         parse_options=parse_options,
         convert_options=convert_options,
     )
 
-    rows = 0
+    rows: int = 0
     print(f"Converting {input_path} -> {output_path}", flush=True)
+    writer: pq.ParquetWriter
     with pq.ParquetWriter(
         output_path,
         spec.schema,
@@ -443,12 +458,57 @@ def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
         store_schema=True,
     ) as writer:
         for batch in reader:
-            table = _normalise_batch(batch, spec.schema, spec.zero_defaults)
+            table: pa.Table = _normalise_batch(
+                batch, spec.schema, spec.zero_defaults
+            )
             writer.write_table(table, row_group_size=PARQUET_ROW_GROUP_SIZE)
             rows += table.num_rows
 
     print(f"  {rows:,} rows", flush=True)
     return output_path
+
+
+def _convert_table_worker(task: TableTask) -> Path:
+    """Run one table conversion in a worker process."""
+
+    name: str
+    input_dir: Path
+    output_dir: Path
+    name, input_dir, output_dir = task
+    return convert_table(name, input_dir, output_dir)
+
+
+def _default_worker_count() -> int:
+    """Choose a bounded process count for the five independent tables."""
+
+    available_cpus: int = os.cpu_count() or 1
+    return min(len(TABLES), available_cpus)
+
+
+def convert_tables(
+    input_dir: Path,
+    output_dir: Path,
+    workers: int,
+) -> list[Path]:
+    """Convert all tables, using one process per active table at most."""
+
+    tasks: list[TableTask] = [
+        (name, input_dir, output_dir)
+        for name in TABLES
+    ]
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+    worker_count: int = min(workers, len(tasks))
+    if worker_count == 1:
+        return [_convert_table_worker(task) for task in tasks]
+
+    # ``spawn`` is explicit so this remains safe on platforms where forking
+    # after importing PyArrow (which has native thread pools) is problematic.
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        mp_context=mp.get_context("spawn"),
+    ) as executor:
+        return list(executor.map(_convert_table_worker, tasks, chunksize=1))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -467,14 +527,33 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="output directory (default: same as --input-dir)",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "number of table conversion processes "
+            f"(default: {_default_worker_count()})"
+        ),
+    )
+    args: argparse.Namespace = parser.parse_args(argv)
 
-    input_dir: Path = args.input_dir
-    output_dir: Path = args.output_dir or input_dir
+    input_dir: Path = cast(Path, args.input_dir)
+    output_dir_arg: Path | None = cast(Path | None, args.output_dir)
+    output_dir: Path = output_dir_arg or input_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for name in TABLES:
-        convert_table(name, input_dir, output_dir)
+    workers_arg: int | None = cast(int | None, args.workers)
+    workers: int = (
+        workers_arg
+        if workers_arg is not None
+        else _default_worker_count()
+    )
+    if workers < 1:
+        parser.error("--workers must be at least 1")
+    workers = min(workers, len(TABLES))
+    print(f"Converting {len(TABLES)} tables with {workers} worker(s)", flush=True)
+    convert_tables(input_dir, output_dir, workers)
     return 0
 
 

@@ -63,14 +63,20 @@ The conversion policy is:
 
 The CSV reader is PyArrow's incremental `open_csv` reader with explicit column
 types, so it processes batches rather than loading a complete table into
-memory. Parquet uses Brotli compression at level 11, dictionary encoding,
-statistics, and the embedded Arrow schema.
+memory. The five independent tables are converted in parallel with Python's
+`ProcessPoolExecutor`; the default number of workers is bounded by both the
+number of tables and the available CPUs. Each worker keeps the CSV reader
+single-threaded to avoid nested thread-pool oversubscription. Parquet uses
+Brotli compression at level 11, dictionary encoding, statistics, and the
+embedded Arrow schema.
 
 Run it locally after generating the CSV files with:
 
 ```sh
 python3 -m pip install -r requirements.txt
 python3 csvtoparquet.py --input-dir data --output-dir data
+# Optionally choose the number of table workers:
+python3 csvtoparquet.py --input-dir data --output-dir data --workers 2
 ```
 
 This produces only `Posts.parquet`, `Votes.parquet`, `Users.parquet`,
