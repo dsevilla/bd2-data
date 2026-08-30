@@ -479,10 +479,10 @@ def _convert_table_worker(task: TableTask) -> Path:
 
 
 def _default_worker_count() -> int:
-    """Choose a bounded process count for the five independent tables."""
+    """Use four workers per CPU, bounded by the five independent tables."""
 
     available_cpus: int = os.cpu_count() or 1
-    return min(len(TABLES), available_cpus)
+    return min(len(TABLES), available_cpus * 4)
 
 
 def convert_tables(

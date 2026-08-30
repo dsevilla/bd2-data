@@ -64,11 +64,11 @@ The conversion policy is:
 The CSV reader is PyArrow's incremental `open_csv` reader with explicit column
 types, so it processes batches rather than loading a complete table into
 memory. The five independent tables are converted in parallel with Python's
-`ProcessPoolExecutor`; the default number of workers is bounded by both the
-number of tables and the available CPUs. Each worker keeps the CSV reader
-single-threaded to avoid nested thread-pool oversubscription. Parquet uses
-Brotli compression at level 11, dictionary encoding, statistics, and the
-embedded Arrow schema.
+`ProcessPoolExecutor`; the default is four workers per CPU, bounded by the
+five available table tasks. This intentionally favors I/O overlap. Each worker
+keeps the CSV reader single-threaded to avoid nested thread-pool
+oversubscription. Parquet uses Brotli compression at level 11, dictionary
+encoding, statistics, and the embedded Arrow schema.
 
 Run it locally after generating the CSV files with:
 
