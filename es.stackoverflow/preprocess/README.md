@@ -77,6 +77,20 @@ This produces only `Posts.parquet`, `Votes.parquet`, `Users.parquet`,
 `Tags.parquet`, and `Comments.parquet`. The CI workflow packages those five
 files as `es.stackoverflow.parquet.tar.gz` for distribution.
 
+To check the conversion locally, run:
+
+```sh
+python3 validate_conversion.py --input-dir data --output-dir data
+```
+
+[`validate_conversion.py`](validate_conversion.py) reads the CSV and Parquet
+independently and fails if it finds different row counts, malformed CSV rows,
+an unexpected schema, unexpected nulls, invalid integer values, duplicate
+primary keys, or different numeric counts/sums/minima/maxima. It also prints
+means and the `VoteTypeId` distribution as a quick sanity report. It reads
+only the relevant numeric columns from Parquet; the Parquet row count, schema,
+and null counts come from its metadata where possible.
+
 The archive also contains files such as `Badges.xml`, `PostHistory.xml`, and
 `PostLinks.xml`; they are not currently converted by `preprocess.sh`.
 
@@ -214,5 +228,7 @@ community activity.
 - [`rowselector.py`](rowselector.py) writes the CSV header and rows.
 - [`csvtoparquet.py`](csvtoparquet.py) applies the explicit schemas and writes
   typed Parquet files.
+- [`validate_conversion.py`](validate_conversion.py) checks the CSV/Parquet
+  row counts, schemas, nulls, keys, and numeric summaries.
 - [`Dockerfile`](Dockerfile) supplies Python and GNU Parallel.
 - [`URL`](URL) pins the source archive used for a run.

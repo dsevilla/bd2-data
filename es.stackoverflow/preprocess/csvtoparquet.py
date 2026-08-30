@@ -20,7 +20,7 @@ import argparse
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from collections.abc import Mapping
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -49,7 +49,7 @@ import pyarrow.parquet as pq
 # no longer export it after Favorites/Bookmarks were replaced by private
 # Saves.  Its absence means "not available", not zero.
 
-POSTS_SCHEMA = pa.schema(
+POSTS_SCHEMA: pa.Schema = pa.schema(
     [
         pa.field(
             "Id",
@@ -136,7 +136,7 @@ POSTS_SCHEMA = pa.schema(
     ]
 )
 
-VOTES_SCHEMA = pa.schema(
+VOTES_SCHEMA: pa.Schema = pa.schema(
     [
         pa.field("Id", pa.int64(), nullable=False,
                  metadata={b"role": b"primary_key"}),
@@ -167,7 +167,7 @@ VOTES_SCHEMA = pa.schema(
     ]
 )
 
-USERS_SCHEMA = pa.schema(
+USERS_SCHEMA: pa.Schema = pa.schema(
     [
         pa.field("Id", pa.int64(), nullable=False,
                  metadata={b"role": b"primary_key"}),
@@ -205,7 +205,7 @@ USERS_SCHEMA = pa.schema(
     ]
 )
 
-TAGS_SCHEMA = pa.schema(
+TAGS_SCHEMA: pa.Schema = pa.schema(
     [
         pa.field("Id", pa.int64(), nullable=False,
                  metadata={b"role": b"primary_key"}),
@@ -239,7 +239,7 @@ TAGS_SCHEMA = pa.schema(
     ]
 )
 
-COMMENTS_SCHEMA = pa.schema(
+COMMENTS_SCHEMA: pa.Schema = pa.schema(
     [
         pa.field("Id", pa.int64(), nullable=False,
                  metadata={b"role": b"primary_key"}),
@@ -303,10 +303,10 @@ TABLES: dict[str, TableSpec] = {
 # ``open_csv`` is the memory-efficient streaming reader.  Its incremental
 # reader is single-threaded, but explicit column types avoid type inference
 # errors and the process never needs to materialize the whole CSV.
-CSV_BLOCK_SIZE = 32 * 1024 * 1024
-PARQUET_ROW_GROUP_SIZE = 100_000
-PARQUET_COMPRESSION = "brotli"
-PARQUET_COMPRESSION_LEVEL = 11
+CSV_BLOCK_SIZE: int = 32 * 1024 * 1024
+PARQUET_ROW_GROUP_SIZE: int = 100_000
+PARQUET_COMPRESSION: str = "brotli"
+PARQUET_COMPRESSION_LEVEL: int = 11
 
 
 def _all_nullable_schema(schema: pa.Schema) -> pa.Schema:
@@ -469,8 +469,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    input_dir = args.input_dir
-    output_dir = args.output_dir or input_dir
+    input_dir: Path = args.input_dir
+    output_dir: Path = args.output_dir or input_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for name in TABLES:

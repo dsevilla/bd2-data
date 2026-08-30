@@ -36,6 +36,10 @@ jobs:
         working-directory: es.stackoverflow/preprocess
         run: python csvtoparquet.py --input-dir data --output-dir data
 
+      - name: Validate CSV to Parquet conversion
+        working-directory: es.stackoverflow/preprocess
+        run: python validate_conversion.py --input-dir data --output-dir data
+
       - name: Compress each CSV with gzip
         working-directory: es.stackoverflow/preprocess
         run: gzip --keep --best data/*.csv
