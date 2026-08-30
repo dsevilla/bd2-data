@@ -42,6 +42,41 @@ The current pipeline processes these five files:
 | `Tags.xml` | `Tags.csv` | Tag records |
 | `Comments.xml` | `Comments.csv` | Comments on posts |
 
+### CSV to Parquet
+
+After the XML-to-CSV step, [`csvtoparquet.py`](csvtoparquet.py) applies the
+explicit PyArrow schemas in its clearly marked `Explicit schemas` section and
+writes one typed Parquet file per table. The schemas are based on the current
+CSV headers and the official dump documentation, not on the old teaching
+notebooks.
+
+The conversion policy is:
+
+- numeric counters and metrics whose missing value is treated as zero are
+  filled with `0` and written as non-nullable columns;
+- optional numeric foreign keys such as `ParentId` remain nullable;
+- optional dates and strings remain nullable;
+- legacy `Posts.FavoriteCount` is deliberately not generated: current public
+  dumps no longer export it after Favorites/Bookmarks were replaced by
+  private [Saves](https://meta.stackexchange.com/questions/383706/what-happened-to-favoritecount);
+- the Arrow schema is stored inside each Parquet file.
+
+The CSV reader is PyArrow's incremental `open_csv` reader with explicit column
+types, so it processes batches rather than loading a complete table into
+memory. Parquet uses Brotli compression at level 11, dictionary encoding,
+statistics, and the embedded Arrow schema.
+
+Run it locally after generating the CSV files with:
+
+```sh
+python3 -m pip install -r requirements.txt
+python3 csvtoparquet.py --input-dir data --output-dir data
+```
+
+This produces only `Posts.parquet`, `Votes.parquet`, `Users.parquet`,
+`Tags.parquet`, and `Comments.parquet`. The CI workflow packages those five
+files as `es.stackoverflow.parquet.tar.gz` for distribution.
+
 The archive also contains files such as `Badges.xml`, `PostHistory.xml`, and
 `PostLinks.xml`; they are not currently converted by `preprocess.sh`.
 
@@ -85,6 +120,12 @@ python3 xmltocsv.py data/Posts.xml data/Posts.csv
 ```
 
 Omit the second argument to write CSV to standard output.
+
+The workflow [`prepare-es-stackoverflow-data.yml`](../../.github/workflows/prepare-es-stackoverflow-data.yml)
+performs the download, XML-to-CSV conversion, CSV gzip compression, and
+CSV-to-Parquet conversion. It publishes the uncompressed CSV archive, every
+individual `.csv.gz`, every Parquet file, and the complete Parquet tarball as
+release assets.
 
 ## Conversion behavior
 
@@ -171,5 +212,7 @@ community activity.
 - [`schemaextract.py`](schemaextract.py) discovers the file-wide attribute
   schema.
 - [`rowselector.py`](rowselector.py) writes the CSV header and rows.
+- [`csvtoparquet.py`](csvtoparquet.py) applies the explicit schemas and writes
+  typed Parquet files.
 - [`Dockerfile`](Dockerfile) supplies Python and GNU Parallel.
 - [`URL`](URL) pins the source archive used for a run.

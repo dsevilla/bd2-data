@@ -1,1 +1,1 @@
-pandas[performance,parquet]
+pyarrow>=16,<27

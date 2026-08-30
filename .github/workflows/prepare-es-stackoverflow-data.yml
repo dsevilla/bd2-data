@@ -29,6 +29,24 @@ jobs:
           FORCE_DOWNLOAD: '1'
         run: sh preprocess.sh
 
+      - name: Install Parquet conversion dependencies
+        run: python -m pip install --disable-pip-version-check -r es.stackoverflow/preprocess/requirements.txt
+
+      - name: Convert CSV files to Parquet
+        working-directory: es.stackoverflow/preprocess
+        run: python csvtoparquet.py --input-dir data --output-dir data
+
+      - name: Compress each CSV with gzip
+        working-directory: es.stackoverflow/preprocess
+        run: gzip --keep --best data/*.csv
+
+      - name: Package Parquet files
+        working-directory: es.stackoverflow/preprocess
+        run: |
+          set -eu
+          tar -czf es.stackoverflow.parquet.tar.gz -C data \
+            Posts.parquet Votes.parquet Users.parquet Tags.parquet Comments.parquet
+
       - name: Package processed XML and CSV files
         working-directory: es.stackoverflow/preprocess
         run: |
@@ -46,3 +64,6 @@ jobs:
           files: |
             es.stackoverflow/preprocess/es.stackoverflow.xml.tar.gz
             es.stackoverflow/preprocess/es.stackoverflow.csv.tar.gz
+            es.stackoverflow/preprocess/data/*.csv.gz
+            es.stackoverflow/preprocess/data/*.parquet
+            es.stackoverflow/preprocess/es.stackoverflow.parquet.tar.gz

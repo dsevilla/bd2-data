@@ -34,7 +34,6 @@ CREATE TABLE Posts (
     CommunityOwnedDate DATETIME(6) NULL DEFAULT NULL,
     ContentLicense TEXT NULL DEFAULT NULL,
     CreationDate DATETIME(6) NULL DEFAULT NULL,
-    FavoriteCount INT DEFAULT 0,
     LastActivityDate DATETIME(6) NULL DEFAULT NULL,
     LastEditDate DATETIME(6) NULL DEFAULT NULL,
     LastEditorDisplayName TEXT,
@@ -58,7 +57,6 @@ UPDATE Posts SET ClosedDate = NULL WHERE ClosedDate = '';
 UPDATE Posts SET CommentCount = 0 WHERE CommentCount = '';
 UPDATE Posts SET CommunityOwnedDate = NULL WHERE CommunityOwnedDate = '';
 UPDATE Posts SET CreationDate = NULL WHERE CreationDate = '';
-UPDATE Posts SET FavoriteCount = 0 WHERE FavoriteCount = '';
 UPDATE Posts SET LastActivityDate = NULL WHERE LastActivityDate = '';
 UPDATE Posts SET LastEditDate = NULL WHERE LastEditDate = '';
 UPDATE Posts SET LastEditorUserId = NULL WHERE LastEditorUserId = '';
