@@ -2,8 +2,9 @@
 
 The XML-to-CSV step intentionally discovers the columns present in the dump.
 This second step applies the explicit, teaching-friendly schemas below.  It
-reads CSV incrementally and writes Parquet incrementally, so it does not need
-to hold a complete table in memory.  The independent tables are converted in
+uses Polars' lazy CSV scan and streaming batches to sort each table by ``Id``;
+PyArrow's ParquetWriter writes the final file so the exact Arrow schema and
+field metadata are preserved.  The independent tables are converted in
 parallel using worker processes.
 
 Example:
@@ -24,12 +25,13 @@ from collections.abc import Iterator, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import pyarrow as pa
-import pyarrow.compute as pc
-import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
+
+if TYPE_CHECKING:
+    import polars as pl
 
 # ---------------------------------------------------------------------------
 # Explicit schemas
@@ -43,7 +45,7 @@ import pyarrow.parquet as pq
 #   * optional dates and strings remain NULL when they are absent.
 #
 # The metadata is deliberately small and human-readable.  It is embedded in
-# the Arrow schema stored in the Parquet file (store_schema=True below).  It
+# the Arrow schema stored in the Parquet file.  It
 # is useful when generating database DDL, but it is not itself a SQL default
 # or a foreign-key constraint.
 #
@@ -306,30 +308,15 @@ TABLES: dict[str, TableSpec] = {
 }
 
 
-# ``open_csv`` is the memory-efficient streaming reader.  Its incremental
-# reader is single-threaded, but explicit column types avoid type inference
-# errors and the process never needs to materialize the whole CSV.
-CSV_BLOCK_SIZE: int = 32 * 1024 * 1024
+# Polars uses a lazy CSV scan and streaming batches.  Explicit column types
+# avoid inference errors and let the optimizer keep the scan lazy until the
+# sorted results are consumed.  Sorting is a global operation, so it can still
+# require a substantial amount of memory even though results are batched.
+CSV_BATCH_SIZE: int = 100_000
 PARQUET_ROW_GROUP_SIZE: int = 100_000
 PARQUET_COMPRESSION: str = "brotli"
 PARQUET_COMPRESSION_LEVEL: int = 11
-
-
-def _all_nullable_schema(schema: pa.Schema) -> pa.Schema:
-    """Return the input schema used while CSV nulls are still being handled."""
-
-    return pa.schema(
-        [
-            pa.field(
-                field.name,
-                field.type,
-                nullable=True,
-                metadata=field.metadata,
-            )
-            for field in schema
-        ],
-        metadata=schema.metadata,
-    )
+SORT_COLUMN: str = "Id"
 
 
 def _read_header(path: Path) -> list[str]:
@@ -345,7 +332,7 @@ def _validate_header(
     path: Path,
     schema: pa.Schema,
     zero_defaults: Mapping[str, int],
-) -> None:
+) -> list[str]:
     actual: list[str] = _read_header(path)
     if len(actual) != len(set(actual)):
         raise ValueError(f"CSV header contains duplicate columns: {path}")
@@ -375,76 +362,133 @@ def _validate_header(
         if extra:
             details.append(f"unexpected columns: {', '.join(extra)}")
         raise ValueError(f"Unexpected schema in {path}: {'; '.join(details)}")
+    return actual
 
 
-def _normalise_batch(
-    batch: pa.RecordBatch,
+def _polars_dtype(data_type: pa.DataType) -> pl.DataType:
+    """Map one supported Arrow type to its equivalent Polars dtype."""
+
+    import polars as pl
+
+    if pa.types.is_int8(data_type):
+        return pl.Int8
+    if pa.types.is_int32(data_type):
+        return pl.Int32
+    if pa.types.is_int64(data_type):
+        return pl.Int64
+    if pa.types.is_string(data_type):
+        return pl.String
+    if pa.types.is_timestamp(data_type):
+        timestamp_type: pa.TimestampType = cast(pa.TimestampType, data_type)
+        return pl.Datetime(time_unit=timestamp_type.unit)
+    raise TypeError(f"Unsupported Arrow type in explicit schema: {data_type}")
+
+
+def _polars_overrides(
+    schema: pa.Schema,
+    header: list[str],
+) -> dict[str, pl.DataType]:
+    """Return explicit Polars dtypes for the columns present in the CSV."""
+
+    header_set: set[str] = set(header)
+    return {
+        field.name: _polars_dtype(field.type)
+        for field in schema
+        if field.name in header_set
+    }
+
+
+def _prepare_lazy_frame(
+    input_path: Path,
     schema: pa.Schema,
     zero_defaults: Mapping[str, int],
-) -> pa.Table:
-    table: pa.Table = pa.Table.from_batches([batch])
+    header: list[str],
+) -> pl.LazyFrame:
+    """Build the typed, normalized and ordered lazy CSV-to-Parquet plan."""
 
-    for name, default in zero_defaults.items():
-        field: pa.Field = schema.field(name)
-        array: pa.Array = pc.fill_null(
-            table[name], pa.scalar(default, type=field.type)
+    import polars as pl
+
+    schema_overrides: dict[str, pl.DataType] = _polars_overrides(
+        schema, header
+    )
+    lazy_frame: pl.LazyFrame = pl.scan_csv(
+        input_path,
+        has_header=True,
+        separator=",",
+        quote_char='"',
+        encoding="utf8",
+        schema_overrides=schema_overrides,
+        null_values="",
+        empty_string_is_null=True,
+        infer_schema=False,
+        try_parse_dates=False,
+        ignore_errors=False,
+        low_memory=True,
+    )
+
+    # A field may be absent from every XML row and therefore absent from the
+    # discovered CSV header.  Recreate it lazily with either its documented
+    # zero default or NULL.  Required fields were rejected by _validate_header.
+    missing_columns: list[pl.Expr] = [
+        pl.lit(
+            zero_defaults.get(name, None)
         )
-        table = table.set_column(table.schema.get_field_index(name), name, array)
+        .cast(_polars_dtype(field.type))
+        .alias(name)
+        for field in schema
+        for name in [field.name]
+        if name not in header
+    ]
+    if missing_columns:
+        lazy_frame = lazy_frame.with_columns(missing_columns)
 
-    # This also verifies that required fields really contain no nulls and that
-    # values fit in the explicitly chosen integer/timestamp types.
-    result: pa.Table = table.select(schema.names).cast(schema, safe=True)
-    result.validate(full=True)
-    return result
+    zero_fill_columns: list[pl.Expr] = [
+        pl.col(name)
+        .fill_null(default)
+        .cast(_polars_dtype(schema.field(name).type))
+        .alias(name)
+        for name, default in zero_defaults.items()
+        if name in header
+    ]
+    if zero_fill_columns:
+        lazy_frame = lazy_frame.with_columns(zero_fill_columns)
+
+    # Select also fixes the output column order, independently of the order
+    # discovered by schemaextract.py.
+    return lazy_frame.select(schema.names).sort(SORT_COLUMN)
 
 
 def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
+    """Convert one CSV table to sorted, explicitly typed Parquet."""
+
     spec: TableSpec = TABLES[name]
     input_path: Path = input_dir / f"{name}.csv"
     output_path: Path = output_dir / f"{name}.parquet"
 
     if not input_path.is_file():
         raise FileNotFoundError(f"Input CSV not found: {input_path}")
-    _validate_header(input_path, spec.schema, spec.zero_defaults)
-
     if not pa.Codec.is_available(PARQUET_COMPRESSION):
         raise RuntimeError(
             f"PyArrow was built without {PARQUET_COMPRESSION} compression support"
         )
-
-    read_options: pacsv.ReadOptions = pacsv.ReadOptions(
-        # Tables are converted in separate worker processes.  Keeping this
-        # reader single-threaded avoids oversubscribing the CPU when several
-        # Brotli writers are active at once.
-        use_threads=False,
-        block_size=CSV_BLOCK_SIZE,
-        encoding="utf-8",
+    header: list[str] = _validate_header(
+        input_path, spec.schema, spec.zero_defaults
     )
-    parse_options: pacsv.ParseOptions = pacsv.ParseOptions(
-        delimiter=",",
-        quote_char='"',
-        double_quote=True,
-        newlines_in_values=False,
+    lazy_frame: pl.LazyFrame = _prepare_lazy_frame(
+        input_path, spec.schema, spec.zero_defaults, header
     )
-    convert_options: pacsv.ConvertOptions = pacsv.ConvertOptions(
-        column_types=_all_nullable_schema(spec.schema),
-        include_columns=spec.schema.names,
-        include_missing_columns=True,
-        null_values=[""],
-        strings_can_be_null=True,
-        quoted_strings_can_be_null=True,
-        check_utf8=True,
-    )
-
-    reader: Iterator[pa.RecordBatch] = pacsv.open_csv(
-        input_path,
-        read_options=read_options,
-        parse_options=parse_options,
-        convert_options=convert_options,
-    )
-
-    rows: int = 0
     print(f"Converting {input_path} -> {output_path}", flush=True)
+    # Polars' native sink is excellent for a fully-Polars schema, but its
+    # String columns currently export as Arrow large_string.  The teaching
+    # schemas intentionally use the more portable pa.string(), and also carry
+    # field metadata and non-nullability.  Consume Polars' sorted streaming
+    # batches and use PyArrow as the exact-schema writer at this boundary.
+    batches: Iterator[pl.DataFrame] = lazy_frame.collect_batches(
+        chunk_size=CSV_BATCH_SIZE,
+        maintain_order=True,
+        engine="streaming",
+    )
+    rows: int = 0
     writer: pq.ParquetWriter
     with pq.ParquetWriter(
         output_path,
@@ -457,19 +501,26 @@ def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
         data_page_version="1.0",
         store_schema=True,
     ) as writer:
-        for batch in reader:
-            table: pa.Table = _normalise_batch(
-                batch, spec.schema, spec.zero_defaults
-            )
+        for frame in batches:
+            table: pa.Table = frame.to_arrow().cast(spec.schema, safe=True)
+            table.validate(full=True)
             writer.write_table(table, row_group_size=PARQUET_ROW_GROUP_SIZE)
             rows += table.num_rows
 
-    print(f"  {rows:,} rows", flush=True)
+    print(
+        f"  {rows:,} rows; wrote sorted Parquet by {SORT_COLUMN}",
+        flush=True,
+    )
     return output_path
 
 
 def _convert_table_worker(task: TableTask) -> Path:
     """Run one table conversion in a worker process."""
+
+    # The parent intentionally starts up to four processes per CPU because
+    # this workload has substantial I/O.  A single Polars thread per process
+    # avoids turning that into four nested CPU thread pools per process.
+    os.environ.setdefault("POLARS_MAX_THREADS", "1")
 
     name: str
     input_dir: Path

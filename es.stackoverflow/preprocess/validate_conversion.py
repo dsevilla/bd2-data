@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate the CSV-to-Parquet conversion without loading whole tables.
 
 The checks intentionally use two independent readers: Python's CSV reader for
@@ -241,6 +240,7 @@ def _validate_parquet(path: Path, spec: TableSpec, result: ValidationResult) -> 
             name: NumericStats() for name in integer_names
         }
         seen_ids: set[int] = set()
+        last_id: int | None = None
         for batch in parquet.iter_batches(
             batch_size=PARQUET_BATCH_SIZE,
             columns=integer_names,
@@ -268,6 +268,11 @@ def _validate_parquet(path: Path, spec: TableSpec, result: ValidationResult) -> 
                         value = int(value)
                         if value in seen_ids:
                             result.error(f"{path}: duplicate primary key Id={value}")
+                        if last_id is not None and value < last_id:
+                            result.error(
+                                f"{path}: Id is not sorted: {value} follows {last_id}"
+                            )
+                        last_id = value
                         seen_ids.add(value)
         result.parquet_numeric = numeric
     except (OSError, pa.ArrowException, ValueError) as exc:
@@ -300,25 +305,25 @@ def _compare(result: ValidationResult, spec: TableSpec) -> None:
 
     if result.parquet_null_counts is not None:
         for field in spec.schema:
-            expected = _expected_null_count(
+            expected_nulls = _expected_null_count(
                 field.name, field, source, spec.zero_defaults
             )
             actual = result.parquet_null_counts[field.name]
-            if expected != actual:
+            if expected_nulls != actual:
                 result.error(
-                    f"{field.name} null count differs: expected={expected}, "
+                    f"{field.name} null count differs: expected={expected_nulls}, "
                     f"Parquet={actual}"
                 )
 
-    for name, expected in source.numeric.items():
-        actual = result.parquet_numeric.get(name)
-        if actual is None:
+    for name, expected_stats in source.numeric.items():
+        actual_stats = result.parquet_numeric.get(name)
+        if actual_stats is None:
             continue
         values = (
-            ("count", expected.count, actual.count),
-            ("sum", expected.total, actual.total),
-            ("min", expected.minimum, actual.minimum),
-            ("max", expected.maximum, actual.maximum),
+            ("count", expected_stats.count, actual_stats.count),
+            ("sum", expected_stats.total, actual_stats.total),
+            ("min", expected_stats.minimum, actual_stats.minimum),
+            ("max", expected_stats.maximum, actual_stats.maximum),
         )
         for label, expected_value, actual_value in values:
             if expected_value != actual_value:
@@ -328,7 +333,7 @@ def _compare(result: ValidationResult, spec: TableSpec) -> None:
                 )
 
 
-def _format_number(value: int | float | None) -> str:
+def _format_number(value: float | None) -> str:
     if value is None:
         return "NULL"
     if isinstance(value, float):

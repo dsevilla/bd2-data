@@ -61,14 +61,32 @@ The conversion policy is:
   private [Saves](https://meta.stackexchange.com/questions/383706/what-happened-to-favoritecount);
 - the Arrow schema is stored inside each Parquet file.
 
-The CSV reader is PyArrow's incremental `open_csv` reader with explicit column
-types, so it processes batches rather than loading a complete table into
-memory. The five independent tables are converted in parallel with Python's
+The conversion uses Polars' lazy `scan_csv` and streaming `collect_batches`.
+Every CSV column present in the file receives the corresponding Polars dtype
+derived from the explicit Arrow schema; missing optional fields are added
+lazily, and numeric fields listed in `zero_defaults` are filled with `0`. The
+lazy plan selects the schema's column order and sorts the complete table by
+`Id` before producing batches. The sort is necessarily a global operation, so
+streaming reduces CSV/output memory pressure but does not make the sort free or
+guarantee that the whole sort fits in a small amount of memory.
+
+The final writer remains PyArrow's `ParquetWriter` deliberately. Polars' native
+Parquet sink can accept a custom `pyarrow.Schema`, but its string columns are
+exported as Arrow `large_string`; the explicit schemas here use the more
+portable `pa.string()` and also require exact field metadata and nullability.
+Each sorted Polars batch is therefore cast to the declared Arrow schema and
+written directly to the final Parquet row group. This preserves the exact
+schema without materializing the complete table in Python.
+
+The five independent tables are converted in parallel with Python's
 `ProcessPoolExecutor`; the default is four workers per CPU, bounded by the
-five available table tasks. This intentionally favors I/O overlap. Each worker
-keeps the CSV reader single-threaded to avoid nested thread-pool
-oversubscription. Parquet uses Brotli compression at level 11, dictionary
-encoding, statistics, and the embedded Arrow schema.
+five available table tasks. Each process uses one Polars thread by default to
+avoid nested thread-pool oversubscription; set `POLARS_MAX_THREADS` explicitly
+if a different balance is appropriate for a local run. Parquet uses Brotli
+compression at level 11, row groups of 100,000 rows, statistics, and the
+explicit Arrow schema (including its field metadata). Polars documents the
+lazy CSV scan in its [`scan_csv` API documentation](https://docs.pola.rs/api/python/stable/reference/api/polars.scan_csv.html)
+and the streaming batch interface in its [`collect_batches` API documentation](https://docs.pola.rs/api/python/stable/reference/lazyframe/api/polars.LazyFrame.collect_batches.html).
 
 Run it locally after generating the CSV files with:
 
@@ -91,9 +109,9 @@ python3 validate_conversion.py --input-dir data --output-dir data
 
 [`validate_conversion.py`](validate_conversion.py) reads the CSV and Parquet
 independently and fails if it finds different row counts, malformed CSV rows,
-an unexpected schema, unexpected nulls, invalid integer values, duplicate
-primary keys, or different numeric counts/sums/minima/maxima. It also prints
-means and the `VoteTypeId` distribution as a quick sanity report. It reads
+an unexpected schema, unexpected nulls, invalid integer values, duplicate or
+out-of-order primary keys, or different numeric counts/sums/minima/maxima. It
+also prints means and the `VoteTypeId` distribution as a quick sanity report. It reads
 only the relevant numeric columns from Parquet; the Parquet row count, schema,
 and null counts come from its metadata where possible.
 
