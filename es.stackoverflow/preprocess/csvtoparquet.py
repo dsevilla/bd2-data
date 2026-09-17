@@ -282,10 +282,69 @@ COMMENTS_SCHEMA: pa.Schema = pa.schema(
 class TableSpec:
     schema: pa.Schema
     zero_defaults: Mapping[str, int]
+    # Columns that get a per-row-group Parquet Bloom filter (see the
+    # "Parquet optimizations" section below for the selection criteria).
+    bloom_filter_columns: tuple[str, ...] = ()
 
 
 TableTask: TypeAlias = tuple[str, Path, Path]
 
+
+# Polars uses a lazy CSV scan and streaming batches.  Explicit column types
+# avoid inference errors and let the optimizer keep the scan lazy until the
+# sorted results are consumed.  Sorting is a global operation, so it can still
+# require a substantial amount of memory even though results are batched.
+CSV_BATCH_SIZE: int = 100_000
+PARQUET_ROW_GROUP_SIZE: int = 100_000
+# Brotli at its maximum quality (11) is the strongest general-purpose codec
+# PyArrow ships: on this kind of mixed text/integer data it compresses
+# noticeably denser than gzip's own maximum (level 9), at the cost of slower
+# writing -- an acceptable trade for a dataset that is written once here and
+# then published for repeated download.
+PARQUET_COMPRESSION: str = "brotli"
+PARQUET_COMPRESSION_LEVEL: int = 11
+SORT_COLUMN: str = "Id"
+
+
+# ---------------------------------------------------------------------------
+# Parquet optimizations derived from field roles
+# ---------------------------------------------------------------------------
+#
+# Every table is written sorted by ``Id`` (see ``SORT_COLUMN`` below), so
+# row-group and page statistics already let readers prune efficiently on
+# ``Id`` itself. Two other kinds of predicates are common on this dataset and
+# are *not* covered by that ordering:
+#
+#   * Point/equality lookups on a foreign key that is scattered across the
+#     file precisely because the file is sorted by its own ``Id`` instead
+#     (e.g. "all Votes for PostId=X", "all Posts by OwnerUserId=X"). A
+#     Bloom filter lets a reader skip a whole row group without touching it.
+#   * Range predicates on dates/metrics (CreationDate, Score, ViewCount...),
+#     which are exactly what min/max statistics -- carried at both the
+#     row-group and, with ``write_page_index``, the page level -- are for.
+#
+# Bloom filters are deliberately *not* added for:
+#   * low-cardinality/enum-like columns (PostTypeId, VoteTypeId,
+#     ContentLicense): with only a handful of distinct values, nearly every
+#     row group contains all of them, so a filter test almost never says
+#     "absent" and the bitset is pure overhead. Dictionary encoding plus
+#     statistics already handle these well.
+#   * free-text columns (Body, Text, AboutMe, Title, Tags, Location,
+#     WebsiteUrl, DisplayName): they are searched with substring/``LIKE``
+#     predicates, and a Bloom filter only accelerates exact-match equality.
+#   * numeric metrics and dates (Score, ViewCount, CreationDate, ...): these
+#     are filtered with range predicates, which Bloom filters cannot help.
+#   * the sorted ``Id`` primary key itself: row-group min/max pruning on a
+#     fully sorted column is already close to optimal; a Bloom filter would
+#     be redundant.
+#
+# A Parquet Bloom filter is stored once per row group (column chunk), so its
+# distinct-value budget should track the row group size, not the whole
+# file -- a row group of PARQUET_ROW_GROUP_SIZE rows cannot hold more than
+# that many distinct values. Using the much larger PyArrow default (2^20)
+# here would just waste space in every row group.
+BLOOM_FILTER_NDV: int = PARQUET_ROW_GROUP_SIZE
+BLOOM_FILTER_FPP: float = 0.01
 
 # The names here must match the CSV files produced by preprocess.sh.
 TABLES: dict[str, TableSpec] = {
@@ -297,26 +356,36 @@ TABLES: dict[str, TableSpec] = {
             "Score": 0,
             "ViewCount": 0,
         },
+        # OwnerUserId: "posts by this user". ParentId: "answers to this
+        # question". Both are FKs whose values are scattered relative to
+        # the Id-sorted file.
+        bloom_filter_columns=("OwnerUserId", "ParentId"),
     ),
-    "Votes": TableSpec(VOTES_SCHEMA, {"BountyAmount": 0}),
+    "Votes": TableSpec(
+        VOTES_SCHEMA,
+        {"BountyAmount": 0},
+        # PostId: "all votes for this post" is the dominant Votes query.
+        bloom_filter_columns=("PostId",),
+    ),
     "Users": TableSpec(
         USERS_SCHEMA,
         {"DownVotes": 0, "Reputation": 0, "UpVotes": 0, "Views": 0},
+        # AccountId identifies the same person across every Stack Exchange
+        # site and is the natural join key for cross-site exercises.
+        bloom_filter_columns=("AccountId",),
     ),
+    # No Bloom filters: Tags is a small dimension table (a few thousand rows
+    # for es.stackoverflow), so it is already covered by one or a handful of
+    # row groups -- there is nothing left for a filter to prune.
     "Tags": TableSpec(TAGS_SCHEMA, {"Count": 0}),
-    "Comments": TableSpec(COMMENTS_SCHEMA, {"Score": 0}),
+    "Comments": TableSpec(
+        COMMENTS_SCHEMA,
+        {"Score": 0},
+        # PostId: "comments on this post". UserId: "comments by this user"
+        # (unlike Votes.UserId, Comments always attributes its author).
+        bloom_filter_columns=("PostId", "UserId"),
+    ),
 }
-
-
-# Polars uses a lazy CSV scan and streaming batches.  Explicit column types
-# avoid inference errors and let the optimizer keep the scan lazy until the
-# sorted results are consumed.  Sorting is a global operation, so it can still
-# require a substantial amount of memory even though results are batched.
-CSV_BATCH_SIZE: int = 100_000
-PARQUET_ROW_GROUP_SIZE: int = 100_000
-PARQUET_COMPRESSION: str = "brotli"
-PARQUET_COMPRESSION_LEVEL: int = 11
-SORT_COLUMN: str = "Id"
 
 
 def _read_header(path: Path) -> list[str]:
@@ -458,6 +527,30 @@ def _prepare_lazy_frame(
     return lazy_frame.select(schema.names).sort(SORT_COLUMN)
 
 
+def _sorting_columns(schema: pa.Schema) -> list[pq.SortingColumn]:
+    """Record the guarantee _prepare_lazy_frame already enforces.
+
+    The writer does not sort or verify anything itself; this only stores the
+    fact in the row-group metadata so readers (DuckDB, Spark, Arrow
+    Datasets...) can rely on it instead of re-sorting or re-checking.
+    """
+
+    return [pq.SortingColumn(schema.get_field_index(SORT_COLUMN))]
+
+
+def _bloom_filter_options(
+    columns: tuple[str, ...],
+) -> dict[str, dict[str, object]] | None:
+    """Build per-column Bloom filter settings, or None to write none."""
+
+    if not columns:
+        return None
+    return {
+        name: {"ndv": BLOOM_FILTER_NDV, "fpp": BLOOM_FILTER_FPP}
+        for name in columns
+    }
+
+
 def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
     """Convert one CSV table to sorted, explicitly typed Parquet."""
 
@@ -500,6 +593,16 @@ def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
         write_statistics=True,
         data_page_version="1.0",
         store_schema=True,
+        # Page-level statistics let readers prune below row-group
+        # granularity; nearly free to write and useful to any consumer
+        # other than PyArrow itself, which does not yet read it back.
+        write_page_index=True,
+        # Detects corruption introduced while a downloaded file sits on
+        # disk or travels over the network -- relevant since these files
+        # are published for direct download.
+        write_page_checksum=True,
+        sorting_columns=_sorting_columns(spec.schema),
+        bloom_filter_options=_bloom_filter_options(spec.bloom_filter_columns),
     ) as writer:
         for frame in batches:
             table: pa.Table = frame.to_arrow().cast(spec.schema, safe=True)
