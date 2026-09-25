@@ -1,0 +1,62 @@
+{
+  "description": "Muestra reducida del dump de es.stackoverflow para practicar consultas en el navegador. Se conservan hilos completos: cada pregunta viene con todas sus respuestas, comentarios, votos y los usuarios a los que esas filas hacen referencia.",
+  "source_release": "es.stackoverflow.data-26-27",
+  "parameters": {
+    "thread_modulo": 8,
+    "text_limit": 100,
+    "truncated_columns": {
+      "Posts": [
+        "Body"
+      ],
+      "Comments": [
+        "Text"
+      ],
+      "Users": [
+        "AboutMe"
+      ]
+    },
+    "truncation_mark": "…"
+  },
+  "format": {
+    "type": "jsonl.gz",
+    "encoding": "utf-8",
+    "dates": "MongoDB Extended JSON (relaxed): {\"$date\": \"...\"}"
+  },
+  "collections": {
+    "Posts": {
+      "file": "Posts.jsonl.gz",
+      "documents": 55884,
+      "jsonl_bytes": 34441647,
+      "gzip_bytes": 5538151
+    },
+    "Users": {
+      "file": "Users.jsonl.gz",
+      "documents": 22025,
+      "jsonl_bytes": 6541053,
+      "gzip_bytes": 1269176
+    },
+    "Comments": {
+      "file": "Comments.jsonl.gz",
+      "documents": 88831,
+      "jsonl_bytes": 23027721,
+      "gzip_bytes": 5152780
+    },
+    "Votes": {
+      "file": "Votes.jsonl.gz",
+      "documents": 77162,
+      "jsonl_bytes": 9843085,
+      "gzip_bytes": 536968
+    },
+    "Tags": {
+      "file": "Tags.jsonl.gz",
+      "documents": 2996,
+      "jsonl_bytes": 253364,
+      "gzip_bytes": 47395
+    }
+  },
+  "totals": {
+    "documents": 246898,
+    "jsonl_bytes": 74106870,
+    "gzip_bytes": 12544470
+  }
+}
