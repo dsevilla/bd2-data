@@ -1,5 +1,5 @@
 {
-  "description": "Muestra reducida del dump de es.stackoverflow para practicar consultas en el navegador. Se conservan hilos completos: cada pregunta viene con todas sus respuestas, comentarios, votos y los usuarios a los que esas filas hacen referencia.",
+  "description": "Todas las filas del dump de es.stackoverflow para practicar en el navegador. Body, Text y AboutMe se limitan a un máximo de 100 bytes UTF-8.",
   "source_release": "es.stackoverflow.data-26-27",
   "source": {
     "bytes": 548754064,
@@ -7,8 +7,8 @@
     "url": "https://archive.org/download/stackexchange_20260630_sakura/stackexchange_20260630/es.stackoverflow.com.7z"
   },
   "parameters": {
-    "thread_modulo": 8,
-    "text_limit": 100,
+    "sampling": "none; all rows",
+    "text_limit_bytes": 100,
     "truncated_columns": {
       "Posts": [
         "Body"
@@ -19,38 +19,38 @@
       "Users": [
         "AboutMe"
       ]
-    },
-    "truncation_mark": "…"
+    }
   },
   "format": {
     "type": "jsonl.gz",
     "encoding": "utf-8",
-    "dates": "MongoDB Extended JSON (relaxed): {\"$date\": \"...\"}"
+    "dates": "MongoDB Extended JSON (relaxed): {\"$date\": \"...\"}",
+    "compression": "gzip level 9"
   },
   "collections": {
     "Posts": {
       "file": "Posts.jsonl.gz",
-      "documents": 55884,
-      "jsonl_bytes": 34441647,
-      "gzip_bytes": 5538151
+      "documents": 419881,
+      "jsonl_bytes": 258071258,
+      "gzip_bytes": 41552519
     },
     "Users": {
       "file": "Users.jsonl.gz",
-      "documents": 22025,
-      "jsonl_bytes": 6541053,
-      "gzip_bytes": 1269176
+      "documents": 469417,
+      "jsonl_bytes": 132008567,
+      "gzip_bytes": 19677994
     },
     "Comments": {
       "file": "Comments.jsonl.gz",
-      "documents": 88831,
-      "jsonl_bytes": 23027721,
-      "gzip_bytes": 5152780
+      "documents": 712104,
+      "jsonl_bytes": 182826754,
+      "gzip_bytes": 40318314
     },
     "Votes": {
       "file": "Votes.jsonl.gz",
-      "documents": 77162,
-      "jsonl_bytes": 9843085,
-      "gzip_bytes": 536968
+      "documents": 813033,
+      "jsonl_bytes": 103909395,
+      "gzip_bytes": 5128813
     },
     "Tags": {
       "file": "Tags.jsonl.gz",
@@ -60,8 +60,8 @@
     }
   },
   "totals": {
-    "documents": 246898,
-    "jsonl_bytes": 74106870,
-    "gzip_bytes": 12544470
+    "documents": 2417431,
+    "jsonl_bytes": 677069338,
+    "gzip_bytes": 106725035
   }
 }

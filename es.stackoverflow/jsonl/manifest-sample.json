@@ -1,0 +1,68 @@
+{
+  "description": "Muestra reducida del mismo dump: una pregunta de cada 8, con sus respuestas, comentarios, votos y usuarios relacionados. Los campos de texto se limitan a 100 bytes UTF-8.",
+  "source_release": "es.stackoverflow.data-26-27",
+  "source": {
+    "bytes": 548754064,
+    "sha256": "b53aa0259e6e66b5f9678569f1eabcb07246228b17924a1dd67f81e7fc14ae52",
+    "url": "https://archive.org/download/stackexchange_20260630_sakura/stackexchange_20260630/es.stackoverflow.com.7z"
+  },
+  "parameters": {
+    "sampling": "every Nth question, with complete threads",
+    "thread_modulo": 8,
+    "text_limit_bytes": 100,
+    "truncated_columns": {
+      "Posts": [
+        "Body"
+      ],
+      "Comments": [
+        "Text"
+      ],
+      "Users": [
+        "AboutMe"
+      ]
+    }
+  },
+  "format": {
+    "type": "jsonl.gz",
+    "encoding": "utf-8",
+    "dates": "MongoDB Extended JSON (relaxed): {\"$date\": \"...\"}",
+    "compression": "gzip level 9"
+  },
+  "collections": {
+    "Posts": {
+      "file": "Posts-sample.jsonl.gz",
+      "documents": 55884,
+      "jsonl_bytes": 34230990,
+      "gzip_bytes": 5517367
+    },
+    "Users": {
+      "file": "Users-sample.jsonl.gz",
+      "documents": 22025,
+      "jsonl_bytes": 6529490,
+      "gzip_bytes": 1267223
+    },
+    "Comments": {
+      "file": "Comments-sample.jsonl.gz",
+      "documents": 88831,
+      "jsonl_bytes": 22799053,
+      "gzip_bytes": 5108198
+    },
+    "Votes": {
+      "file": "Votes-sample.jsonl.gz",
+      "documents": 77162,
+      "jsonl_bytes": 9843085,
+      "gzip_bytes": 536968
+    },
+    "Tags": {
+      "file": "Tags-sample.jsonl.gz",
+      "documents": 2996,
+      "jsonl_bytes": 253364,
+      "gzip_bytes": 47395
+    }
+  },
+  "totals": {
+    "documents": 246898,
+    "jsonl_bytes": 73655982,
+    "gzip_bytes": 12477151
+  }
+}

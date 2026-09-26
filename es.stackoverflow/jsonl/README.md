@@ -1,153 +1,114 @@
-# Muestra JSONL de es.stackoverflow
+# Datos JSONL de es.stackoverflow
 
-Muestra reducida del *dump* de Stack Overflow en español, pensada para
-practicar consultas **dentro del navegador** con un motor de consultas MongoDB
-en memoria como [mingo](https://github.com/kofrasa/mingo), sin servidor y sin
-instalar nada.
-
-El *dump* completo ocupa alrededor de 1 GB descomprimido y no cabe en la
-memoria de una pestaña: sólo `Posts.Body` son 792 MB, el 96 % del total. Esta
-muestra ocupa **12,5 MB comprimidos** y unos 100 MB de *heap* una vez cargada
-en JavaScript.
+Este directorio contiene dos variantes JSONL del *dump* de Stack Overflow en
+español usado en el curso 2026-2027. La completa conserva todas las filas; en
+ambas variantes sólo se truncan `Posts.Body`, `Comments.Text` y `Users.AboutMe`
+a un máximo de 100 bytes UTF-8. Los datos proceden del Parquet de la release
+`es.stackoverflow.data-26-27`.
 
 ## Contenido
 
 | Fichero | Documentos | JSONL | gzip |
 | --- | ---: | ---: | ---: |
-| `Posts.jsonl.gz` | 55.884 | 34,4 MB | 5,5 MB |
-| `Comments.jsonl.gz` | 88.831 | 23,0 MB | 5,2 MB |
-| `Votes.jsonl.gz` | 77.162 | 9,8 MB | 0,5 MB |
-| `Users.jsonl.gz` | 22.025 | 6,5 MB | 1,3 MB |
+| `Posts.jsonl.gz` | 419.881 | 258,1 MB | 41,55 MB |
+| `Users.jsonl.gz` | 469.417 | 132,0 MB | 19,68 MB |
+| `Comments.jsonl.gz` | 712.104 | 182,8 MB | 40,32 MB |
+| `Votes.jsonl.gz` | 813.033 | 103,9 MB | 5,13 MB |
 | `Tags.jsonl.gz` | 2.996 | 0,3 MB | 0,05 MB |
-| **total** | **246.898** | **74,1 MB** | **12,5 MB** |
+| **total** | **2.417.431** | **677,1 MB** | **106,73 MB** |
 
-`manifest.json` repite estas cifras junto con los parámetros con los que se
-generó la muestra, para que una página pueda mostrarlas sin abrir los datos.
+`manifest.json` registra los tamaños exactos, los recuentos, el origen y los
+parámetros de generación. Todos los ficheros comprimidos quedan por debajo de
+100 MB; el mayor ocupa 41.552.519 bytes.
 
-## Cómo se construye la muestra
+## Variante reducida
 
-Dos reducciones independientes, ambas en
-[`../preprocess/parquettojsonl.py`](../preprocess/parquettojsonl.py):
+Para equipos con menos memoria se conservan junto a los ficheros completos
+cinco alternativas con el sufijo `-sample`, por ejemplo
+`Posts-sample.jsonl.gz`; `manifest-sample.json` describe esta variante. También
+procede del mismo Parquet y limita a 100 bytes UTF-8 los mismos campos de texto.
+Mantiene una pregunta de cada ocho (`Id % 8 == 0`), todas sus respuestas,
+comentarios y votos, los usuarios referenciados por esos registros y todas las
+etiquetas. Tiene 246.898 documentos y ocupa 12,5 MB comprimida en total.
 
-- **Texto truncado**: `Posts.Body`, `Comments.Text` y `Users.AboutMe` se cortan
-  a 100 caracteres. Un valor cortado termina en `…`, de modo que se distingue
-  de uno naturalmente corto.
-- **Muestreo por hilos, no aleatorio**: se conserva una pregunta de cada 8
-  (`Id % 8 == 0`) y, con ella, **todas** sus respuestas, comentarios y votos, y
-  todos los usuarios a los que esas filas hacen referencia. `Tags` se conserva
-  entero, junto con los posts de extracto y wiki que referencia.
+Las páginas web cargan por defecto los ficheros completos y permiten cambiar a
+esta variante desde un botón. Sus consultas devuelven menos filas, porque se
+trabaja con un conjunto reducido de hilos.
 
-Muestrear hilos completos es lo que mantiene los ejercicios con sentido: con un
-muestreo aleatorio de posts habría respuestas sin su pregunta, y los `$lookup`
-devolverían arrays vacíos. Sobre los ficheros generados se comprueba que no
-queda ninguna referencia colgando: `OwnerUserId`, `LastEditorUserId`,
-`ParentId`, `AcceptedAnswerId`, `PostId`, `UserId`, `ExcerptPostId` y
-`WikiPostId` resuelven siempre dentro de la muestra.
+## Convenciones y transformación
 
-## Convenciones de los documentos
+El generador [`../preprocess/parquettojsonl.py`](../preprocess/parquettojsonl.py)
+recorre todos los registros de cada Parquet. No aplica muestreo ni modifica
+otros campos. Para las tres columnas de texto indicadas conserva el prefijo de
+hasta 100 bytes UTF-8; si el corte cae dentro de un carácter, descarta sólo los
+bytes incompletos finales para que el resultado siga siendo texto válido. No
+añade puntos suspensivos.
 
-Son las mismas que usan las sesiones 3 y 4 de BDGE al cargar los Parquet con
-`RecordBatch.to_pylist()`:
+Se conservan las convenciones de las sesiones 3 y 4 de BDGE:
 
-- se mantiene el orden de columnas del Parquet y **todas** las columnas
-  aparecen en todos los documentos;
-- lo ausente es `null`, no una clave que falta (así siguen teniendo sentido los
-  ejercicios sobre `$exists` frente a `null`);
-- las fechas van en *MongoDB Extended JSON* (modo relajado),
-  `{"$date": "2015-10-30T10:26:44.223Z"}`, que entiende tanto `mongoimport`
-  como el `reviver` de la página;
-- no se genera `_id`: lo pone el servidor, o el propio cargador.
+- se mantiene el orden de columnas del Parquet y todas las columnas aparecen
+en cada documento;
+- los valores nulos se escriben como `null`, no como claves ausentes;
+- las fechas se escriben en MongoDB Extended JSON (modo relajado), por ejemplo
+  `{"$date":"2015-10-30T10:26:44.223Z"}`;
+- no se genera `_id`.
 
-Cada fichero es JSON Lines comprimido con gzip: un documento por línea, UTF-8.
-El gzip se escribe con marca de tiempo cero, así que regenerar la muestra sin
-cambios en los datos produce ficheros byte a byte idénticos y no crea
-*commits* vacíos.
+Cada fichero es JSON Lines comprimido con gzip de nivel 9: un documento UTF-8
+por línea. La marca temporal del gzip es cero, de modo que la generación con
+los mismos Parquet produce los mismos bytes. El proceso lee el Parquet en lotes
+de 20.000 filas y aborta si un fichero comprimido supera 95 MiB, dejando margen
+bajo el límite de 100 MB por fichero de GitHub.
 
-## Cargarla en el navegador
+La carga completa en el navegador puede requerir varios GB de memoria, además
+de la descarga de los cinco ficheros. Los resultados sí incluyen todas las
+filas del *dump*, pero las consultas que dependan del contenido de esos tres
+campos de texto operan sobre su versión truncada.
 
-Los *assets* de un *release* de GitHub **no envían cabeceras CORS**, así que
-desde una página hay que leer la copia versionada en este repositorio, que sí
-las envía:
+## Lectura desde una página web
 
-```js
-// jsDelivr (CDN, CORS, límite de 20 MB por fichero; el mayor aquí son 5,5 MB)
-const BASE = "https://cdn.jsdelivr.net/gh/dsevilla/bd2-data@main/es.stackoverflow/jsonl";
-// Alternativa sin CDN: https://raw.githubusercontent.com/dsevilla/bd2-data/main/es.stackoverflow/jsonl
-
-const revivir = (clave, valor) =>
-  valor !== null && typeof valor === "object" && typeof valor.$date === "string"
-    ? new Date(valor.$date)
-    : valor;
-
-async function cargar(tabla) {
-  const respuesta = await fetch(`${BASE}/${tabla}.jsonl.gz`);
-  // El fichero llega tal cual (sin Content-Encoding), así que se descomprime aquí.
-  const texto = await new Response(
-    respuesta.body.pipeThrough(new DecompressionStream("gzip")),
-  ).text();
-  return texto.split("\n").filter(Boolean).map((linea) => JSON.parse(linea, revivir));
-}
-
-const db = {};
-for (const tabla of ["Posts", "Users", "Comments", "Votes", "Tags"]) {
-  db[tabla.toLowerCase()] = await cargar(tabla);
-}
-
-// Las colecciones son arrays; $lookup las resuelve por nombre.
-const opciones = { collectionResolver: (nombre) => db[nombre] };
-const respuestasPorPregunta = new mingo.Aggregator([
-  { $match: { PostTypeId: 1 } },
-  { $lookup: { from: "posts", localField: "Id", foreignField: "ParentId", as: "respuestas" } },
-  { $addFields: { NumRespuestas: { $size: "$respuestas" } } },
-  { $sort: { NumRespuestas: -1 } },
-  { $limit: 10 },
-  { $project: { _id: 0, Id: 1, Title: 1, NumRespuestas: 1 } },
-], opciones).run(db.posts);
-```
-
-Medido con mingo 7.2.4 sobre esta muestra: 0,6 s de carga, ~100 MB de *heap* y
-entre 5 y 40 ms por consulta, incluidos los `$lookup` anteriores.
-
-Dos avisos para quien escriba los ejercicios:
-
-- `$lookup` con `localField`/`foreignField` construye una tabla *hash* de la
-  colección unida, pero `$lookup` con `let` + `pipeline` ejecuta el
-  subpipeline **una vez por documento de entrada**: es cuadrático y bloquea la
-  pestaña. Conviene forzar la primera forma, o poner un `$limit` antes.
-- mingo no tiene índices ni `explain`, así que los ejercicios sobre planes de
-  consulta e índices siguen necesitando un `mongod` de verdad.
-
-## Cargarla en un MongoDB real
-
-El mismo fichero sirve para un `mongod`, con las fechas ya tipadas:
+Los *assets* de una *release* de GitHub no envían cabeceras CORS, así que una
+página web debe descargar la copia versionada de este directorio. Las prácticas
+prueban jsDelivr y usan `raw.githubusercontent.com` como alternativa. Las
+descargas están separadas en dos *releases*: [JSONL completo de 2026-27](https://github.com/dsevilla/bd2-data/releases/tag/jsonl-full-26-27)
+y [JSONL reducido de 2026-27](https://github.com/dsevilla/bd2-data/releases/tag/jsonl-sample-26-27).
+Cada una publica sus ficheros con nombres ordinarios (`Posts.jsonl.gz`, etc.) y
+un `manifest.json`. La completa sirve para descargar con `curl` o importar en
+MongoDB:
 
 ```sh
 gunzip -c Posts.jsonl.gz | mongoimport --db bdge --collection posts
 ```
 
-## Regenerar
+Las fechas Extended JSON se pueden revivir como `Date` al leerlas desde
+JavaScript. Por ejemplo, una colección se puede cargar línea a línea con
+`JSON.parse(line, reviver)` después de pasar el flujo gzip por
+`DecompressionStream("gzip")`.
 
-Desde `es.stackoverflow/`:
+## Regenerar y publicar
+
+Desde la raíz de este repositorio:
 
 ```sh
-make jsonl                                   # descarga los .parquet del release y genera jsonl/
-make jsonl THREAD_MODULO=4 TEXT_LIMIT=200    # el doble de hilos y más texto
+make -C es.stackoverflow jsonl
+make -C es.stackoverflow jsonl-sample
+make -C es.stackoverflow jsonl FORCE=1
+make -C es.stackoverflow jsonl-sample FORCE=1
 ```
 
-Los Parquet se descargan del *release* `es.stackoverflow.data-26-27`, no de los
-ficheros de este repositorio. El generador falla si algún fichero de salida
-supera los 95 MB, el tamaño a partir del cual GitHub rechaza el *push*; hoy el
-mayor son 5,5 MB, así que no hace falta partirlos como sí ocurre con
-`es.stackoverflow.db.xz.00/.01`.
+Los *targets* descargan, si hace falta, los cinco Parquet de
+`es.stackoverflow.data-26-27` y generan cada variante por separado. El límite
+predeterminado es 100 bytes; se puede ajustar con `JSONL_TEXT_LIMIT_BYTES`,
+aunque los ficheros deben mantenerse bajo el máximo por archivo.
 
-El *workflow* [`update-jsonl-sample`](../../.github/workflows/update-jsonl-sample.yml)
-hace lo mismo en CI, publica los ficheros como *release* `jsonl-sample-26-27` y
-confirma en el repositorio los que hayan cambiado.
+El *workflow* [`update-jsonl-data`](../../.github/workflows/update-jsonl-data.yml)
+regenera y confirma ambas variantes en el repositorio. Después publica dos
+*releases*: `jsonl-full-26-27` contiene los ficheros completos y
+`jsonl-sample-26-27` los reducidos. En cada una, los ficheros usan los nombres
+habituales (`Posts.jsonl.gz`, etc.); el manifiesto de cada variante se publica
+como `manifest.json`. El *workflow* conserva la etiqueta de la muestra para
+mantener sus enlaces y reemplaza sus *assets* al regenerarla.
 
-No reconstruye la muestra si no ha cambiado el origen:
-[`../source.json`](../source.json) dice de qué volcado de Stack Exchange sale el
-*release* (URL y sha256 del `.7z`; lo escribe y lo commitea el *workflow* que
-lo genera, y también se publica con él), y `manifest.json` guarda el del último
-`make jsonl`. Si coinciden, los
-parámetros son los mismos y los ficheros están, no se hace nada. `make jsonl
-FORCE=1` (o la opción `force` del *workflow*) la reconstruye de todos modos.
+El origen del *dump* queda registrado en [`../source.json`](../source.json) y
+en `manifest.json` y `manifest-sample.json`. Si el origen y los parámetros coinciden y los ficheros ya
+están completos, `make jsonl` no los reconstruye. `FORCE=1` fuerza la
+regeneración.

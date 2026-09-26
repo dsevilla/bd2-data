@@ -1,51 +1,9 @@
-"""Build a reduced JSONL sample of the dump for in-browser practice.
+"""Build complete or thread-sampled JSONL for the es.stackoverflow practice.
 
-The Parquet files published in the data release are the full dump: around a
-gigabyte of data, 96% of which is the HTML in ``Posts.Body``.  A browser
-cannot hold that as JavaScript objects, so this script writes a much smaller
-sample that keeps the *shape* of the data intact and can be loaded in one go
-by an in-memory MongoDB query engine such as mingo.
-
-Two independent reductions are applied:
-
-* **Long text is truncated** (``Body``, ``Text`` and ``AboutMe``) to
-  ``--text-limit`` characters.  A truncated value ends with an ellipsis so a
-  cut value is distinguishable from a naturally short one.
-* **Rows are sampled by thread, not at random.**  A question is kept when
-  ``Id % --thread-modulo == 0``; then *all* of its answers, comments and
-  votes are kept, together with every user those rows reference.  Sampling
-  whole threads is what keeps ``$lookup``, ``$group`` and the comment and
-  vote counts consistent: a random sample of posts would leave answers
-  without their question and joins returning empty arrays.  The ``Tags``
-  table is always kept whole, as are the excerpt and wiki posts it points at.
-
-The documents follow the same conventions as the session 3 and 4 notebooks of
-the BDGE course, which load the Parquet files with
-``RecordBatch.to_pylist()``: the column order of the Parquet file is kept,
-every column is present in every document, and missing values are ``null``
-rather than absent keys.  Dates are written in MongoDB Extended JSON (relaxed
-mode), ``{"$date": "2008-09-15T08:09:02.123Z"}``, so the same file can be fed
-to ``mongoimport`` and to a browser loader that revives those objects as
-JavaScript ``Date`` values.  No ``_id`` is generated: as in the notebooks, the
-server (or the loader) decides it.
-
-Example:
-
-    python3 parquettojsonl.py --input-dir data --output-dir data
-
-The output directory receives one ``<Table>.jsonl.gz`` per table plus a
-``manifest.json`` describing the sample.  The gzip stream is written with a
-zero timestamp so that an unchanged input produces byte-identical output and
-does not create empty commits.  Packaging is left to the CI workflow.
-
-The sample is not rebuilt when its *origin* has not changed.  The origin is the
-Stack Exchange dump the release was built from: ``source.json`` in the
-repository (dump URL and sha256, written by the workflow that builds the
-release), which ``--source-json`` reads and the manifest records.  If the
-manifest already has the same origin and parameters and its files are on disk,
-the run stops without touching anything, whatever the Parquet files' bytes
-are; ``--force`` rebuilds anyway.  Without a ``source.json`` the origin is
-unknown and the sample is always rebuilt.
+The default keeps every Parquet row. With ``--sample``, it keeps complete
+question threads selected by Id modulo. In both modes, Posts.Body,
+Comments.Text and Users.AboutMe are limited to 100 UTF-8 bytes by default.
+Outputs are deterministic gzip JSONL.
 """
 
 from __future__ import annotations
@@ -63,52 +21,30 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-# ---------------------------------------------------------------------------
-# Sample definition
-# ---------------------------------------------------------------------------
-
 TABLES: tuple[str, ...] = ("Posts", "Users", "Comments", "Votes", "Tags")
-
-# Columns whose value is cut to --text-limit characters.  These three hold
-# 93% of the uncompressed dump between them.
 TRUNCATED_COLUMNS: dict[str, tuple[str, ...]] = {
     "Posts": ("Body",),
     "Comments": ("Text",),
     "Users": ("AboutMe",),
 }
-TRUNCATION_MARK: str = "…"
-
-QUESTION_POST_TYPE: int = 1
-
-# The session 3 loader reads the Parquet files in batches of 20.000 rows.
 BATCH_SIZE: int = 20_000
-
+DEFAULT_TEXT_LIMIT_BYTES: int = 100
 DEFAULT_THREAD_MODULO: int = 8
-DEFAULT_TEXT_LIMIT: int = 100
 DEFAULT_SOURCE_RELEASE: str = "es.stackoverflow.data-26-27"
-
-# GitHub refuses pushes with files over 100 MB.  The sample is expected to be
-# two orders of magnitude smaller than that; the check exists so that a future
-# change of parameters fails here instead of at ``git push``.
+QUESTION_POST_TYPE: int = 1
+# Leave a margin below GitHub's 100 MB per-file limit.
 MAX_FILE_BYTES: int = 95 * 1024 * 1024
 
 
 @dataclass(frozen=True)
 class TableReport:
-    """What ended up in one output file."""
-
     documents: int
     jsonl_bytes: int
     gzip_bytes: int
 
 
-# ---------------------------------------------------------------------------
-# Reading
-# ---------------------------------------------------------------------------
-
-
 def _parquet_path(input_dir: Path, table: str) -> Path:
-    path: Path = input_dir / f"{table}.parquet"
+    path = input_dir / f"{table}.parquet"
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} not found: download the {table}.parquet asset of the data "
@@ -119,38 +55,29 @@ def _parquet_path(input_dir: Path, table: str) -> Path:
 
 def _iter_batches(
     path: Path,
-    columns: list[str] | None,
     batch_size: int,
+    columns: list[str] | None = None,
 ) -> Iterator[pa.RecordBatch]:
-    """Stream a Parquet file, reading only the requested columns."""
-
-    parquet: pq.ParquetFile = pq.ParquetFile(path)
+    parquet = pq.ParquetFile(path)
     yield from parquet.iter_batches(
-        batch_size=batch_size,
-        columns=columns,
-        use_threads=True,
+        batch_size=batch_size, columns=columns, use_threads=True
     )
 
 
-# ---------------------------------------------------------------------------
-# Row selection
-# ---------------------------------------------------------------------------
+def _truncate_utf8(value: str, limit_bytes: int) -> str:
+    """Keep a valid UTF-8 prefix no longer than limit_bytes."""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit_bytes:
+        return value
+    return encoded[:limit_bytes].decode("utf-8", errors="ignore")
 
 
 def select_questions(posts_path: Path, modulo: int, batch_size: int) -> set[int]:
-    """Ids of the questions kept by the sample.
-
-    Post ids are assigned in creation order, so taking one question out of
-    every ``modulo`` spreads the sample evenly over the whole history of the
-    site instead of concentrating it in one period.  The rule is a plain
-    remainder so that regenerating the sample selects exactly the same
-    threads.
-    """
-
+    """Select every Nth question by Id, consistently across regenerations."""
     questions: set[int] = set()
-    for batch in _iter_batches(posts_path, ["Id", "PostTypeId"], batch_size):
-        ids: list[int] = batch.column("Id").to_pylist()
-        types: list[int] = batch.column("PostTypeId").to_pylist()
+    for batch in _iter_batches(posts_path, batch_size, ["Id", "PostTypeId"]):
+        ids = batch.column("Id").to_pylist()
+        types = batch.column("PostTypeId").to_pylist()
         questions.update(
             post_id
             for post_id, post_type in zip(ids, types)
@@ -164,12 +91,11 @@ def select_answers(
     questions: set[int],
     batch_size: int,
 ) -> set[int]:
-    """Ids of every answer belonging to a selected question."""
-
+    """Keep every answer whose parent question belongs to the sample."""
     answers: set[int] = set()
-    for batch in _iter_batches(posts_path, ["Id", "ParentId"], batch_size):
-        ids: list[int] = batch.column("Id").to_pylist()
-        parents: list[int | None] = batch.column("ParentId").to_pylist()
+    for batch in _iter_batches(posts_path, batch_size, ["Id", "ParentId"]):
+        ids = batch.column("Id").to_pylist()
+        parents = batch.column("ParentId").to_pylist()
         answers.update(
             post_id
             for post_id, parent in zip(ids, parents)
@@ -179,15 +105,10 @@ def select_answers(
 
 
 def select_tag_posts(tags_path: Path, batch_size: int) -> set[int]:
-    """Ids of the excerpt and wiki posts referenced by the Tags table.
-
-    Tags is kept whole, so the posts it points at are kept too; otherwise
-    joining Tags with Posts would return empty arrays for every tag.
-    """
-
+    """Keep the excerpt and wiki posts referenced by the complete Tags table."""
     tag_posts: set[int] = set()
     for batch in _iter_batches(
-        tags_path, ["ExcerptPostId", "WikiPostId"], batch_size
+        tags_path, batch_size, ["ExcerptPostId", "WikiPostId"]
     ):
         for column in ("ExcerptPostId", "WikiPostId"):
             tag_posts.update(
@@ -198,46 +119,34 @@ def select_tag_posts(tags_path: Path, batch_size: int) -> set[int]:
     return tag_posts
 
 
-# ---------------------------------------------------------------------------
-# Writing
-# ---------------------------------------------------------------------------
-
-
 def _json_default(value: Any) -> Any:
-    """Serialise the only non-JSON type Arrow produces here: timestamps."""
-
+    """Serialise Arrow timestamps as MongoDB Extended JSON relaxed dates."""
     if isinstance(value, datetime):
-        moment: datetime = (
+        moment = (
             value.replace(tzinfo=timezone.utc)
             if value.tzinfo is None
             else value.astimezone(timezone.utc)
         )
-        stamp: str = moment.isoformat(timespec="milliseconds")
+        stamp = moment.isoformat(timespec="milliseconds")
         return {"$date": stamp.replace("+00:00", "Z")}
     raise TypeError(f"unexpected value of type {type(value).__name__}")
 
 
-def _truncate(value: str, limit: int) -> str:
-    if limit <= 0 or len(value) <= limit:
-        return value
-    return value[:limit] + TRUNCATION_MARK
-
-
 class _JsonlWriter:
-    """Write documents as gzipped JSON Lines, counting both sizes."""
+    """Write documents as deterministic, maximum-compression gzip JSONL."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._raw_file = path.open("wb")
-        # mtime=0 keeps the output byte-identical for identical input.
         self._gzip_file = gzip.GzipFile(
-            filename="", mode="wb", fileobj=self._raw_file, compresslevel=9, mtime=0
+            filename="", mode="wb", fileobj=self._raw_file,
+            compresslevel=9, mtime=0,
         )
-        self.documents: int = 0
-        self.jsonl_bytes: int = 0
+        self.documents = 0
+        self.jsonl_bytes = 0
 
     def write(self, document: dict[str, Any]) -> None:
-        line: bytes = (
+        line = (
             json.dumps(
                 document,
                 default=_json_default,
@@ -251,25 +160,16 @@ class _JsonlWriter:
         self.jsonl_bytes += len(line)
 
     def abort(self) -> None:
-        """Close the files without checking anything, to re-raise the error."""
-
         self._gzip_file.close()
         self._raw_file.close()
 
     def close(self) -> TableReport:
         self._gzip_file.close()
         self._raw_file.close()
-        gzip_bytes: int = self._path.stat().st_size
-        if gzip_bytes > MAX_FILE_BYTES:
-            raise ValueError(
-                f"{self._path.name} is {gzip_bytes / 1e6:,.0f} MB, over the "
-                f"{MAX_FILE_BYTES / 1e6:,.0f} MB limit for a file in the "
-                "repository: raise --thread-modulo or lower --text-limit"
-            )
         return TableReport(
             documents=self.documents,
             jsonl_bytes=self.jsonl_bytes,
-            gzip_bytes=gzip_bytes,
+            gzip_bytes=self._path.stat().st_size,
         )
 
 
@@ -277,28 +177,58 @@ def write_table(
     table: str,
     input_dir: Path,
     output_dir: Path,
+    text_limit_bytes: int,
+    batch_size: int,
+) -> TableReport:
+    """Write every row from one Parquet table, truncating only long text."""
+    path = _parquet_path(input_dir, table)
+    output_path = output_dir / f"{table}.jsonl.gz"
+    temporary_path = output_dir / f"{table}.jsonl.gz.tmp"
+    writer = _JsonlWriter(temporary_path)
+    try:
+        truncated = TRUNCATED_COLUMNS.get(table, ())
+        for batch in _iter_batches(path, batch_size):
+            for document in cast(list[dict[str, Any]], batch.to_pylist()):
+                for column in truncated:
+                    text = document[column]
+                    if text is not None:
+                        document[column] = _truncate_utf8(text, text_limit_bytes)
+                writer.write(document)
+        report = writer.close()
+        if report.gzip_bytes > MAX_FILE_BYTES:
+            raise ValueError(
+                f"{output_path.name} is {report.gzip_bytes / 1e6:,.1f} MB, over "
+                f"the safety limit of {MAX_FILE_BYTES / 1e6:,.1f} MB; use a "
+                "more compact format or adjust the text limit"
+            )
+        temporary_path.replace(output_path)
+        return report
+    except Exception:
+        writer.abort()
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def write_sample_table(
+    table: str,
+    input_dir: Path,
+    output_dir: Path,
     keep: set[int] | None,
     key_column: str,
-    text_limit: int,
+    text_limit_bytes: int,
     batch_size: int,
     collect_users_from: tuple[str, ...] = (),
 ) -> tuple[TableReport, set[int]]:
-    """Write one table's sampled rows, reporting the user ids they reference.
-
-    ``keep`` is the set of accepted values for ``key_column``; ``None`` keeps
-    every row.  The rows are filtered inside Arrow, before the batch is turned
-    into Python dictionaries, so the discarded majority never becomes objects.
-    """
-
-    path: Path = _parquet_path(input_dir, table)
-    truncated: tuple[str, ...] = TRUNCATED_COLUMNS.get(table, ())
-    value_set: pa.Array | None = (
-        pa.array(sorted(keep), type=pa.int64()) if keep is not None else None
-    )
-    user_ids: set[int] = set()
-    writer = _JsonlWriter(output_dir / f"{table}.jsonl.gz")
+    """Write a sampled table and collect user references from selected rows."""
+    path = _parquet_path(input_dir, table)
+    output_path = output_dir / f"{table}-sample.jsonl.gz"
+    temporary_path = output_dir / f"{table}-sample.jsonl.gz.tmp"
+    value_set = pa.array(sorted(keep), type=pa.int64()) if keep is not None else None
+    users: set[int] = set()
+    writer = _JsonlWriter(temporary_path)
     try:
-        for batch in _iter_batches(path, None, batch_size):
+        truncated = TRUNCATED_COLUMNS.get(table, ())
+        for batch in _iter_batches(path, batch_size):
             if value_set is not None:
                 batch = batch.filter(
                     pc.is_in(batch.column(key_column), value_set=value_set)
@@ -306,42 +236,56 @@ def write_table(
             if batch.num_rows == 0:
                 continue
             for column in collect_users_from:
-                user_ids.update(
+                users.update(
                     user_id
                     for user_id in batch.column(column).to_pylist()
                     if user_id is not None
                 )
             for document in cast(list[dict[str, Any]], batch.to_pylist()):
                 for column in truncated:
-                    text: str | None = document[column]
+                    text = document[column]
                     if text is not None:
-                        document[column] = _truncate(text, text_limit)
+                        document[column] = _truncate_utf8(text, text_limit_bytes)
                 writer.write(document)
+        report = writer.close()
+        if report.gzip_bytes > MAX_FILE_BYTES:
+            raise ValueError(
+                f"{output_path.name} is {report.gzip_bytes / 1e6:,.1f} MB, over "
+                f"the safety limit of {MAX_FILE_BYTES / 1e6:,.1f} MB"
+            )
+        temporary_path.replace(output_path)
+        return report, users
     except Exception:
         writer.abort()
+        temporary_path.unlink(missing_ok=True)
         raise
-    return writer.close(), user_ids
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
-
-
-def _parameters(thread_modulo: int, text_limit: int) -> dict[str, Any]:
+def _parameters(text_limit_bytes: int) -> dict[str, Any]:
     return {
-        "thread_modulo": thread_modulo,
-        "text_limit": text_limit,
+        "sampling": "none; all rows",
+        "text_limit_bytes": text_limit_bytes,
         "truncated_columns": {
             table: list(columns) for table, columns in TRUNCATED_COLUMNS.items()
         },
-        "truncation_mark": TRUNCATION_MARK,
+    }
+
+
+def _sample_parameters(
+    thread_modulo: int,
+    text_limit_bytes: int,
+) -> dict[str, Any]:
+    return {
+        "sampling": "every Nth question, with complete threads",
+        "thread_modulo": thread_modulo,
+        "text_limit_bytes": text_limit_bytes,
+        "truncated_columns": {
+            table: list(columns) for table, columns in TRUNCATED_COLUMNS.items()
+        },
     }
 
 
 def read_source(path: Path | None) -> dict[str, Any] | None:
-    """The origin recorded by the release, or None if it does not say."""
-
     if path is None or not path.is_file():
         return None
     return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
@@ -350,121 +294,89 @@ def read_source(path: Path | None) -> dict[str, Any] | None:
 def is_up_to_date(
     output_dir: Path,
     source: dict[str, Any] | None,
-    thread_modulo: int,
-    text_limit: int,
+    text_limit_bytes: int,
 ) -> bool:
-    """True if ``output_dir`` already holds the sample for this origin."""
-
+    """Check origin, full-data parameters, and every committed file size."""
     if source is None:
         return False
     try:
         manifest = json.loads((output_dir / "manifest.json").read_text("utf-8"))
-    except (OSError, ValueError):
-        return False
-    if manifest.get("source") != source:
-        return False
-    if manifest.get("parameters") != _parameters(thread_modulo, text_limit):
-        return False
-    collections: dict[str, Any] = manifest.get("collections", {})
-    if set(collections) != set(TABLES):
-        return False
-    for entry in collections.values():
-        path: Path = output_dir / entry["file"]
-        if not path.is_file() or path.stat().st_size != entry["gzip_bytes"]:
+        collections: dict[str, Any] = manifest["collections"]
+        if manifest.get("source") != source:
             return False
+        if manifest.get("parameters") != _parameters(text_limit_bytes):
+            return False
+        if set(collections) != set(TABLES):
+            return False
+        for table in TABLES:
+            entry = collections[table]
+            path = output_dir / entry["file"]
+            if not path.is_file() or path.stat().st_size != entry["gzip_bytes"]:
+                return False
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
     return True
 
 
-def build_sample(
+def is_sample_up_to_date(
+    output_dir: Path,
+    source: dict[str, Any] | None,
+    thread_modulo: int,
+    text_limit_bytes: int,
+) -> bool:
+    """Check origin, sampling parameters, and all reduced files."""
+    if source is None:
+        return False
+    try:
+        manifest = json.loads(
+            (output_dir / "manifest-sample.json").read_text("utf-8")
+        )
+        collections: dict[str, Any] = manifest["collections"]
+        if manifest.get("source") != source:
+            return False
+        if manifest.get("parameters") != _sample_parameters(
+            thread_modulo, text_limit_bytes
+        ):
+            return False
+        if set(collections) != set(TABLES):
+            return False
+        for table in TABLES:
+            entry = collections[table]
+            path = output_dir / entry["file"]
+            if not path.is_file() or path.stat().st_size != entry["gzip_bytes"]:
+                return False
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return True
+
+
+def build_jsonl(
     input_dir: Path,
     output_dir: Path,
-    thread_modulo: int,
-    text_limit: int,
+    text_limit_bytes: int,
     batch_size: int = BATCH_SIZE,
     source_release: str = DEFAULT_SOURCE_RELEASE,
     source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write every output file and return the manifest describing them."""
-
-    posts_path: Path = _parquet_path(input_dir, "Posts")
-    tags_path: Path = _parquet_path(input_dir, "Tags")
-
-    questions: set[int] = select_questions(posts_path, thread_modulo, batch_size)
-    answers: set[int] = select_answers(posts_path, questions, batch_size)
-    tag_posts: set[int] = select_tag_posts(tags_path, batch_size)
-    posts: set[int] = questions | answers | tag_posts
-    print(
-        f"Selected {len(questions):,} questions, {len(answers):,} answers and "
-        f"{len(tag_posts - questions - answers):,} tag posts",
-        flush=True,
-    )
-
     reports: dict[str, TableReport] = {}
-    users: set[int] = set()
-
-    reports["Posts"], posts_users = write_table(
-        "Posts",
-        input_dir,
-        output_dir,
-        posts,
-        "Id",
-        text_limit,
-        batch_size,
-        collect_users_from=("OwnerUserId", "LastEditorUserId"),
-    )
-    users |= posts_users
-
-    reports["Comments"], comments_users = write_table(
-        "Comments",
-        input_dir,
-        output_dir,
-        posts,
-        "PostId",
-        text_limit,
-        batch_size,
-        collect_users_from=("UserId",),
-    )
-    users |= comments_users
-
-    reports["Votes"], votes_users = write_table(
-        "Votes",
-        input_dir,
-        output_dir,
-        posts,
-        "PostId",
-        text_limit,
-        batch_size,
-        collect_users_from=("UserId",),
-    )
-    users |= votes_users
-
-    # Users is written last: it keeps exactly the users referenced by the rows
-    # already written, so every OwnerUserId, LastEditorUserId and UserId in the
-    # sample resolves to a document in this collection.
-    reports["Users"], _ = write_table(
-        "Users", input_dir, output_dir, users, "Id", text_limit, batch_size
-    )
-    reports["Tags"], _ = write_table(
-        "Tags", input_dir, output_dir, None, "Id", text_limit, batch_size
-    )
-
+    for table in TABLES:
+        reports[table] = write_table(
+            table, input_dir, output_dir, text_limit_bytes, batch_size
+        )
     manifest: dict[str, Any] = {
         "description": (
-            "Muestra reducida del dump de es.stackoverflow para practicar "
-            "consultas en el navegador. Se conservan hilos completos: cada "
-            "pregunta viene con todas sus respuestas, comentarios, votos y "
-            "los usuarios a los que esas filas hacen referencia."
+            "Todas las filas del dump de es.stackoverflow para practicar en el "
+            "navegador. Body, Text y AboutMe se limitan a un máximo de "
+            f"{text_limit_bytes} bytes UTF-8."
         ),
-        # Nothing here records when the job ran: identical inputs must give
-        # byte-identical outputs, so that a rebuild that changes nothing
-        # produces no commit at all.
         "source_release": source_release,
         "source": source,
-        "parameters": _parameters(thread_modulo, text_limit),
+        "parameters": _parameters(text_limit_bytes),
         "format": {
             "type": "jsonl.gz",
             "encoding": "utf-8",
             "dates": "MongoDB Extended JSON (relaxed): {\"$date\": \"...\"}",
+            "compression": "gzip level 9",
         },
         "collections": {
             table: {
@@ -481,120 +393,201 @@ def build_sample(
         "jsonl_bytes": sum(report.jsonl_bytes for report in reports.values()),
         "gzip_bytes": sum(report.gzip_bytes for report in reports.values()),
     }
-    (output_dir / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    temporary_manifest = output_dir / "manifest.json.tmp"
+    temporary_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
+    temporary_manifest.replace(output_dir / "manifest.json")
+    return manifest
+
+
+def build_sample(
+    input_dir: Path,
+    output_dir: Path,
+    thread_modulo: int,
+    text_limit_bytes: int,
+    batch_size: int = BATCH_SIZE,
+    source_release: str = DEFAULT_SOURCE_RELEASE,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a thread-complete sample alongside the full JSONL files."""
+    posts_path = _parquet_path(input_dir, "Posts")
+    tags_path = _parquet_path(input_dir, "Tags")
+    questions = select_questions(posts_path, thread_modulo, batch_size)
+    answers = select_answers(posts_path, questions, batch_size)
+    tag_posts = select_tag_posts(tags_path, batch_size)
+    posts = questions | answers | tag_posts
+    print(
+        f"Sample: {len(questions):,} questions, {len(answers):,} answers, "
+        f"{len(tag_posts - questions - answers):,} tag excerpt/wiki posts",
+        flush=True,
+    )
+
+    reports: dict[str, TableReport] = {}
+    users: set[int] = set()
+    reports["Posts"], referenced_users = write_sample_table(
+        "Posts", input_dir, output_dir, posts, "Id", text_limit_bytes,
+        batch_size, collect_users_from=("OwnerUserId", "LastEditorUserId"),
+    )
+    users |= referenced_users
+    reports["Comments"], referenced_users = write_sample_table(
+        "Comments", input_dir, output_dir, posts, "PostId", text_limit_bytes,
+        batch_size, collect_users_from=("UserId",),
+    )
+    users |= referenced_users
+    reports["Votes"], referenced_users = write_sample_table(
+        "Votes", input_dir, output_dir, posts, "PostId", text_limit_bytes,
+        batch_size, collect_users_from=("UserId",),
+    )
+    users |= referenced_users
+    reports["Users"], _ = write_sample_table(
+        "Users", input_dir, output_dir, users, "Id", text_limit_bytes, batch_size
+    )
+    reports["Tags"], _ = write_sample_table(
+        "Tags", input_dir, output_dir, None, "Id", text_limit_bytes, batch_size
+    )
+
+    manifest: dict[str, Any] = {
+        "description": (
+            "Muestra reducida del mismo dump: una pregunta de cada "
+            f"{thread_modulo}, con sus respuestas, comentarios, votos y usuarios "
+            f"relacionados. Los campos de texto se limitan a {text_limit_bytes} "
+            "bytes UTF-8."
+        ),
+        "source_release": source_release,
+        "source": source,
+        "parameters": _sample_parameters(thread_modulo, text_limit_bytes),
+        "format": {
+            "type": "jsonl.gz",
+            "encoding": "utf-8",
+            "dates": "MongoDB Extended JSON (relaxed): {\"$date\": \"...\"}",
+            "compression": "gzip level 9",
+        },
+        "collections": {
+            table: {
+                "file": f"{table}-sample.jsonl.gz",
+                "documents": reports[table].documents,
+                "jsonl_bytes": reports[table].jsonl_bytes,
+                "gzip_bytes": reports[table].gzip_bytes,
+            }
+            for table in TABLES
+        },
+    }
+    manifest["totals"] = {
+        "documents": sum(report.documents for report in reports.values()),
+        "jsonl_bytes": sum(report.jsonl_bytes for report in reports.values()),
+        "gzip_bytes": sum(report.gzip_bytes for report in reports.values()),
+    }
+    temporary_manifest = output_dir / "manifest-sample.json.tmp"
+    temporary_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_manifest.replace(output_dir / "manifest-sample.json")
     return manifest
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Build the reduced JSONL sample of the es.stackoverflow dump used "
-            "for in-browser practice."
+            "Build complete or thread-sampled JSONL data for the "
+            "es.stackoverflow browser practice."
         )
     )
     parser.add_argument(
-        "--input-dir",
-        type=Path,
-        default=Path("data"),
+        "--input-dir", type=Path, default=Path("data"),
         help="directory containing Posts.parquet, Users.parquet, ... (default: data)",
     )
     parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
+        "--output-dir", type=Path, default=None,
         help="output directory (default: same as --input-dir)",
     )
     parser.add_argument(
-        "--thread-modulo",
-        type=int,
-        default=DEFAULT_THREAD_MODULO,
-        help=(
-            "keep one question out of every N, with its whole thread "
-            f"(default: {DEFAULT_THREAD_MODULO})"
-        ),
+        "--text-limit-bytes", type=int, default=DEFAULT_TEXT_LIMIT_BYTES,
+        help=("maximum UTF-8 bytes retained in Body, Text and AboutMe; "
+              f"default: {DEFAULT_TEXT_LIMIT_BYTES}"),
     )
     parser.add_argument(
-        "--text-limit",
-        type=int,
-        default=DEFAULT_TEXT_LIMIT,
-        help=(
-            "characters kept of Body, Text and AboutMe; 0 keeps them whole "
-            f"(default: {DEFAULT_TEXT_LIMIT})"
-        ),
+        "--sample", action="store_true",
+        help="build the thread-complete reduced dataset instead of all rows",
     )
     parser.add_argument(
-        "--source-release",
-        default=DEFAULT_SOURCE_RELEASE,
-        help=(
-            "data release the Parquet files come from, recorded in the "
-            f"manifest (default: {DEFAULT_SOURCE_RELEASE})"
-        ),
+        "--thread-modulo", type=int, default=DEFAULT_THREAD_MODULO,
+        help=("in sample mode, keep every Nth question and its full thread; "
+              f"default: {DEFAULT_THREAD_MODULO}"),
     )
     parser.add_argument(
-        "--source-json",
-        type=Path,
-        default=None,
-        help=(
-            "source.json: the dump the release was built from (default: none, "
-            "the origin is unknown and the sample is always rebuilt)"
-        ),
+        "--source-release", default=DEFAULT_SOURCE_RELEASE,
+        help=f"data release recorded in the manifest (default: {DEFAULT_SOURCE_RELEASE})",
     )
     parser.add_argument(
-        "--force",
-        action="store_true",
-        help="rebuild even if the sample already comes from the same dump",
+        "--source-json", type=Path, default=None,
+        help="source.json identifying the dump used to build the release",
     )
+    parser.add_argument("--force", action="store_true", help="rebuild even if up to date")
     parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=BATCH_SIZE,
+        "--batch-size", type=int, default=BATCH_SIZE,
         help=f"rows read per Parquet batch (default: {BATCH_SIZE})",
     )
-    args: argparse.Namespace = parser.parse_args(argv)
+    args = parser.parse_args(argv)
 
-    input_dir: Path = cast(Path, args.input_dir)
-    output_dir: Path = cast(Path | None, args.output_dir) or input_dir
-    thread_modulo: int = cast(int, args.thread_modulo)
-    text_limit: int = cast(int, args.text_limit)
-    batch_size: int = cast(int, args.batch_size)
+    input_dir = cast(Path, args.input_dir)
+    output_dir = cast(Path | None, args.output_dir) or input_dir
+    text_limit_bytes = cast(int, args.text_limit_bytes)
+    batch_size = cast(int, args.batch_size)
+    thread_modulo = cast(int, args.thread_modulo)
+    if text_limit_bytes < 0:
+        parser.error("--text-limit-bytes must not be negative")
     if thread_modulo < 1:
         parser.error("--thread-modulo must be at least 1")
-    if text_limit < 0:
-        parser.error("--text-limit must not be negative")
     if batch_size < 1:
         parser.error("--batch-size must be at least 1")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    source: dict[str, Any] | None = read_source(cast(Path | None, args.source_json))
+    source = read_source(cast(Path | None, args.source_json))
     if source is None:
-        print("warning: no source.json, the origin is unknown", flush=True)
-    if not args.force and is_up_to_date(output_dir, source, thread_modulo, text_limit):
-        print(
-            f"{output_dir}: built from the same source dump as the release "
-            "(use --force to rebuild); nothing to do"
+        print("warning: no source.json; the origin is unknown", flush=True)
+    sample = cast(bool, args.sample)
+    if sample:
+        up_to_date = is_sample_up_to_date(
+            output_dir, source, thread_modulo, text_limit_bytes
         )
+    else:
+        up_to_date = is_up_to_date(output_dir, source, text_limit_bytes)
+    if not args.force and up_to_date:
+        variant = "sample" if sample else "complete data"
+        print(f"{output_dir}: {variant} already built from this source; nothing to do")
         return 0
 
-    manifest: dict[str, Any] = build_sample(
-        input_dir,
-        output_dir,
-        thread_modulo,
-        text_limit,
-        batch_size,
-        cast(str, args.source_release),
-        source,
-    )
+    if sample:
+        manifest = build_sample(
+            input_dir,
+            output_dir,
+            thread_modulo,
+            text_limit_bytes,
+            batch_size,
+            cast(str, args.source_release),
+            source,
+        )
+    else:
+        manifest = build_jsonl(
+            input_dir,
+            output_dir,
+            text_limit_bytes,
+            batch_size,
+            cast(str, args.source_release),
+            source,
+        )
     for table in TABLES:
-        entry: dict[str, Any] = manifest["collections"][table]
+        entry = manifest["collections"][table]
         print(
             f"{table + ':':<10} {entry['documents']:>9,} documents  "
             f"{entry['jsonl_bytes'] / 1e6:>8,.1f} MB JSONL  "
             f"{entry['gzip_bytes'] / 1e6:>7,.1f} MB gzip",
             flush=True,
         )
-    totals: dict[str, Any] = manifest["totals"]
+    totals = manifest["totals"]
     print(
         f"{'total:':<10} {totals['documents']:>9,} documents  "
         f"{totals['jsonl_bytes'] / 1e6:>8,.1f} MB JSONL  "

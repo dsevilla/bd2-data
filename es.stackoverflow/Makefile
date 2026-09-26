@@ -2,7 +2,8 @@
 # directory:
 #
 #   make          the SQLite backup fragments (es.stackoverflow.db.xz.00/.01)
-#   make jsonl    the reduced JSONL sample for in-browser practice (jsonl/)
+#   make jsonl          the complete JSONL data (jsonl/)
+#   make jsonl-sample   the thread-complete reduced JSONL data (jsonl/)
 #   make parquet  the Parquet files served from the repository (parquet/)
 #
 # All start from the assets published in the release, not from the files
@@ -32,10 +33,9 @@ SPLIT_PREFIX := $(XZ_FILE).part.
 XZ_OPTIONS := --check=crc64 --threads=1 --lzma2=dict=512MiB,lc=3,lp=0,pb=2,mode=normal,nice=273,mf=bt4,depth=0
 SPLIT_BYTES := 103809024
 
-# --- Reduced JSONL sample -------------------------------------------------
-# One question out of every THREAD_MODULO is kept, together with its whole
-# thread; Body, Text and AboutMe are cut to TEXT_LIMIT characters.  See
-# preprocess/parquettojsonl.py and jsonl/README.md.
+# --- Full JSONL data -------------------------------------------------------
+# Every row is retained; Body, Text and AboutMe are limited to 100 UTF-8 bytes.
+# See preprocess/parquettojsonl.py and jsonl/README.md.
 PYTHON ?= python3
 PARQUET_NAMES := Posts.parquet Users.parquet Comments.parquet Votes.parquet Tags.parquet
 PARQUET_DIR := preprocess/data
@@ -44,11 +44,10 @@ PARQUET_URL_BASE := https://github.com/$(REPOSITORY)/releases/download/$(RELEASE
 SOURCE_JSON := source.json
 JSONL_DIR := jsonl
 REPO_PARQUET_DIR := parquet
-THREAD_MODULO ?= 8
-TEXT_LIMIT ?= 100
+JSONL_TEXT_LIMIT_BYTES ?= 100
 
 .PHONY: all download extract-csv database compress split \
-	download-parquet parquet jsonl clean-build
+	download-parquet parquet jsonl jsonl-sample clean-build
 
 all: split
 
@@ -121,13 +120,24 @@ jsonl: $(PARQUET_FILES)
 	  --input-dir "$(PARQUET_DIR)" \
 	  --output-dir "$(JSONL_DIR)" \
 	  --source-json "$(SOURCE_JSON)" \
-	  --thread-modulo $(THREAD_MODULO) \
-	  --text-limit $(TEXT_LIMIT) \
+	  --text-limit-bytes $(JSONL_TEXT_LIMIT_BYTES) \
 	  --source-release "$(RELEASE_TAG)" \
 	  $(if $(FORCE),--force)
 
+# Reduced alternative for browsers that cannot comfortably hold the full data.
+jsonl-sample: $(PARQUET_FILES)
+	mkdir -p "$(JSONL_DIR)"
+	$(PYTHON) preprocess/parquettojsonl.py \
+	  --input-dir "$(PARQUET_DIR)" \
+	  --output-dir "$(JSONL_DIR)" \
+	  --source-json "$(SOURCE_JSON)" \
+	  --text-limit-bytes $(JSONL_TEXT_LIMIT_BYTES) \
+	  --source-release "$(RELEASE_TAG)" \
+	  --sample \
+	  $(if $(FORCE),--force)
+
 # Remove downloaded/extracted source and build intermediates, preserving the
-# two final .db.xz.00/.01 files, the JSONL sample and parquet/.
+# two final .db.xz.00/.01 files, both JSONL variants and parquet/.
 clean-build:
 	rm -f "$(CSV_ARCHIVE)" "$(CSV_ARCHIVE).part" "$(DB)" "$(DB_TMP)" \
 	  "$(XZ_FILE)" "$(XZ_FILE).tmp" "$(SPLIT_PREFIX)"*

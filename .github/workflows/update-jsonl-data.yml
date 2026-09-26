@@ -1,0 +1,124 @@
+name: Update complete and sample JSONL data
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'es.stackoverflow/jsonl/**'
+      - 'es.stackoverflow/preprocess/parquettojsonl.py'
+      - 'es.stackoverflow/Makefile'
+      - '.github/workflows/update-jsonl-data.yml'
+  schedule:
+    # Run on the first day of every month at 4:00 AM UTC.  It reads the data
+    # release and does nothing unless that release comes from a different
+    # Stack Exchange dump than the JSONL files in the repository.
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if the release comes from the same dump as the current files'
+        type: boolean
+        default: false
+
+jobs:
+  update-jsonl-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Allow the workflow to write to the repository
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read version from config
+        id: read_version
+        run: |
+          VERSION=$(grep '^version:' .github/config.yml | cut -d'"' -f2)
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install conversion dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            -r es.stackoverflow/preprocess/requirements.txt
+
+      - name: Set up Git configuration
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      # Downloads the Parquet assets and writes both complete and reduced JSONL,
+      # unless source.json and the manifests already name the same dump.
+      - name: Build the full and reduced JSONL data
+        env:
+          FORCE: ${{ inputs.force && '1' || '' }}
+        run: |
+          make -C es.stackoverflow jsonl
+          make -C es.stackoverflow jsonl-sample
+
+      - name: Add the JSONL data to git
+        run: git add es.stackoverflow/jsonl
+
+      - name: Commit and push changes
+        run: |
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update es.stackoverflow JSONL data - $(date +'%Y-%m-%d')."
+            git push origin main
+          fi
+
+      # The repo copy serves browser requests (release assets send no CORS
+      # headers). Stage separate asset sets so each release has plain filenames.
+      - name: Prepare JSONL release assets
+        run: |
+          release_dir="${RUNNER_TEMP}/jsonl-assets"
+          mkdir -p "$release_dir/full" "$release_dir/sample"
+          for table in Posts Users Comments Votes Tags; do
+            cp "es.stackoverflow/jsonl/${table}.jsonl.gz" "$release_dir/full/"
+            cp "es.stackoverflow/jsonl/${table}-sample.jsonl.gz" \
+              "$release_dir/sample/${table}.jsonl.gz"
+          done
+          cp es.stackoverflow/jsonl/manifest.json "$release_dir/full/manifest.json"
+          python - "$release_dir/sample/manifest.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path('es.stackoverflow/jsonl/manifest-sample.json').read_text())
+          for entry in manifest['collections'].values():
+              entry['file'] = entry['file'].replace('-sample.jsonl.gz', '.jsonl.gz')
+          Path(sys.argv[1]).write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
+          PY
+
+      - name: Publish complete JSONL release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: jsonl-full-${{ steps.read_version.outputs.tag }}
+          name: JSONL ${{ steps.read_version.outputs.tag }} (completo, 100 bytes)
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          working_directory: ${{ runner.temp }}/jsonl-assets/full
+          files: |
+            *.jsonl.gz
+            manifest.json
+
+      # Keep this tag so existing sample download links continue to work.
+      - name: Publish reduced JSONL release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: jsonl-sample-${{ steps.read_version.outputs.tag }}
+          name: JSONL ${{ steps.read_version.outputs.tag }} (muestra reducida)
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          working_directory: ${{ runner.temp }}/jsonl-assets/sample
+          files: |
+            *.jsonl.gz
+            manifest.json
