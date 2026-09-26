@@ -1,0 +1,54 @@
+name: Update repository Parquet files
+
+# Copies the Parquet files of the data release into es.stackoverflow/parquet/,
+# splitting Posts.parquet under GitHub's 100 MB file limit.  Release assets are
+# served without CORS headers, so web pages fetch the committed copy instead
+# (raw.githubusercontent.com).  Manual only: the source is a pinned release and
+# every commit that changes these files adds ~200 MB to the repository history.
+on:
+  workflow_dispatch:
+
+jobs:
+  update-repo-parquet:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            -r es.stackoverflow/preprocess/requirements.txt
+
+      - name: Set up Git configuration
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      # Downloads the Parquet assets of the data release and fills
+      # es.stackoverflow/parquet/.  The pieces are checked against the release
+      # files before the step succeeds.
+      - name: Build the repository Parquet files
+        run: make -C es.stackoverflow parquet
+
+      - name: Add the files to git
+        run: git add --all es.stackoverflow/parquet
+
+      - name: Commit and push changes
+        run: |
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update es.stackoverflow Parquet files - $(date +'%Y-%m-%d')."
+            git push origin main
+          fi

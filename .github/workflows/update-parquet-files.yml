@@ -1,9 +1,13 @@
-name: Update Parquet Files
+name: Update Parquet Files (legacy)
 
+# Legacy path: regenerates the parquet-files release, which the courses that
+# have not moved to the new data still download.  Its tag carries no course
+# year on purpose.  It uses es.stackoverflow/parquet.old/gen_parquet.ipynb, which
+# reads the XML dump checked into the repository
+# (es.stackoverflow.xml.tar.xz.*).  The current data comes from
+# prepare-es-stackoverflow-data.yml instead (es.stackoverflow.data-<version>).
+# The output never changes, so it only runs on demand.
 on:
-  schedule:
-    # Run on the first day of every month at 2:00 AM UTC
-    - cron: '0 2 1 * *'
   workflow_dispatch:
 
 jobs:
@@ -18,34 +22,28 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read version from config
-        id: read_version
-        run: |
-          VERSION=$(grep '^version:' .github/config.yml | cut -d'"' -f2)
-          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Set up Python virtual environment
         run: |
-          cd es.stackoverflow/parquet
+          cd es.stackoverflow/parquet.old
           python3 -m venv .venv
           . .venv/bin/activate
 
           pip3 install ipython nbconvert
 
       - name: Run notebook to generate parquet files
-        working-directory: es.stackoverflow/parquet
+        working-directory: es.stackoverflow/parquet.old
         run: |
           . .venv/bin/activate
           ipython3 gen_parquet.ipynb
 
       - name: Package parquet and pb files
-        working-directory: es.stackoverflow/parquet
+        working-directory: es.stackoverflow/parquet.old
         run: |
           set -e
           tar -zcf es.stackoverflow.parquet.tar.gz {Posts,Comments,Users,Votes,Tags}.parquet *.pb
 
       - name: Package CSV files
-        working-directory: es.stackoverflow/parquet
+        working-directory: es.stackoverflow/parquet.old
         run: |
           set -e
           tar -zcf es.stackoverflow.csv.tar.gz *.csv
@@ -53,9 +51,9 @@ jobs:
       - name: Upload parquet files as release assets
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: parquet-files-${{ steps.read_version.outputs.tag }}
+          tag_name: parquet-files
           files: |
-            es.stackoverflow/parquet/es.stackoverflow.parquet.tar.gz
-            es.stackoverflow/parquet/es.stackoverflow.csv.tar.gz
-            es.stackoverflow/parquet/*.parquet
-            es.stackoverflow/parquet/*.pb
+            es.stackoverflow/parquet.old/es.stackoverflow.parquet.tar.gz
+            es.stackoverflow/parquet.old/es.stackoverflow.csv.tar.gz
+            es.stackoverflow/parquet.old/*.parquet
+            es.stackoverflow/parquet.old/*.pb

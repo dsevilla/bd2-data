@@ -25,7 +25,7 @@ from collections.abc import Iterator, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -551,6 +551,34 @@ def _bloom_filter_options(
     }
 
 
+def writer_options(spec: TableSpec) -> dict[str, Any]:
+    """ParquetWriter options for every Parquet file this project publishes.
+
+    Shared with splitparquet.py so the pieces of a split table are written
+    exactly like the tables that are not split.
+    """
+
+    return {
+        "version": "2.6",
+        "compression": PARQUET_COMPRESSION,
+        "compression_level": PARQUET_COMPRESSION_LEVEL,
+        "use_dictionary": True,
+        "write_statistics": True,
+        "data_page_version": "1.0",
+        "store_schema": True,
+        # Page-level statistics let readers prune below row-group
+        # granularity; nearly free to write and useful to any consumer
+        # other than PyArrow itself, which does not yet read it back.
+        "write_page_index": True,
+        # Detects corruption introduced while a downloaded file sits on
+        # disk or travels over the network -- relevant since these files
+        # are published for direct download.
+        "write_page_checksum": True,
+        "sorting_columns": _sorting_columns(spec.schema),
+        "bloom_filter_options": _bloom_filter_options(spec.bloom_filter_columns),
+    }
+
+
 def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
     """Convert one CSV table to sorted, explicitly typed Parquet."""
 
@@ -584,25 +612,7 @@ def convert_table(name: str, input_dir: Path, output_dir: Path) -> Path:
     rows: int = 0
     writer: pq.ParquetWriter
     with pq.ParquetWriter(
-        output_path,
-        spec.schema,
-        version="2.6",
-        compression=PARQUET_COMPRESSION,
-        compression_level=PARQUET_COMPRESSION_LEVEL,
-        use_dictionary=True,
-        write_statistics=True,
-        data_page_version="1.0",
-        store_schema=True,
-        # Page-level statistics let readers prune below row-group
-        # granularity; nearly free to write and useful to any consumer
-        # other than PyArrow itself, which does not yet read it back.
-        write_page_index=True,
-        # Detects corruption introduced while a downloaded file sits on
-        # disk or travels over the network -- relevant since these files
-        # are published for direct download.
-        write_page_checksum=True,
-        sorting_columns=_sorting_columns(spec.schema),
-        bloom_filter_options=_bloom_filter_options(spec.bloom_filter_columns),
+        output_path, spec.schema, **writer_options(spec)
     ) as writer:
         for frame in batches:
             table: pa.Table = frame.to_arrow().cast(spec.schema, safe=True)

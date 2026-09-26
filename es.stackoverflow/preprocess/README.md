@@ -165,6 +165,26 @@ CSV-to-Parquet conversion. It publishes the uncompressed CSV archive, every
 individual `.csv.gz`, every Parquet file, and the complete Parquet tarball as
 release assets.
 
+### Parquet files in the repository
+
+The release is the source of truth, but its assets are served without CORS
+headers, so web pages cannot fetch them. The Parquet files are therefore also
+committed to [`../parquet/`](../parquet/), which `raw.githubusercontent.com`
+serves with CORS. GitHub rejects files over 100 MB and `Posts.parquet` is larger,
+so [`splitparquet.py`](splitparquet.py) cuts it between row groups into
+`Posts1.parquet`..`Posts3.parquet` (still ordered by `Id`) and copies the other
+tables unchanged. It verifies that the pieces are identical to the release file.
+
+```sh
+cd ..            # es.stackoverflow/
+make parquet     # download from the release and fill parquet/
+```
+
+The [`update-repo-parquet.yml`](../../.github/workflows/update-repo-parquet.yml)
+workflow does the same and commits the result; it is manual because every
+change adds about 200 MB to the repository history. The previous course's
+generator and data live in [`../parquet.old/`](../parquet.old/).
+
 ## Conversion behavior
 
 `xmltocsv.py` makes two streaming SAX passes over each XML file:
@@ -252,6 +272,8 @@ community activity.
 - [`rowselector.py`](rowselector.py) writes the CSV header and rows.
 - [`csvtoparquet.py`](csvtoparquet.py) applies the explicit schemas and writes
   typed Parquet files.
+- [`splitparquet.py`](splitparquet.py) prepares the files committed to
+  `../parquet/`, splitting `Posts.parquet` below GitHub's file-size limit.
 - [`validate_conversion.py`](validate_conversion.py) checks the CSV/Parquet
   row counts, schemas, nulls, keys, and numeric summaries.
 - [`Dockerfile`](Dockerfile) supplies Python and GNU Parallel.

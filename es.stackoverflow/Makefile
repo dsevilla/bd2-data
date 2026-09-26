@@ -3,9 +3,11 @@
 #
 #   make          the SQLite backup fragments (es.stackoverflow.db.xz.00/.01)
 #   make jsonl    the reduced JSONL sample for in-browser practice (jsonl/)
+#   make parquet  the Parquet files served from the repository (parquet/)
 #
-# Both start from the assets published in the release, not from the files
-# checked into this repository.
+# All start from the assets published in the release, not from the files
+# checked into this repository.  parquet.old/ is the previous course's
+# generator and data; nothing here reads or writes it.
 
 REPOSITORY ?= dsevilla/bd2-data
 RELEASE_TAG ?= es.stackoverflow.data-26-27
@@ -35,11 +37,12 @@ PARQUET_DIR := preprocess/data
 PARQUET_FILES := $(addprefix $(PARQUET_DIR)/,$(PARQUET_NAMES))
 PARQUET_URL_BASE := https://github.com/$(REPOSITORY)/releases/download/$(RELEASE_TAG)
 JSONL_DIR := jsonl
+REPO_PARQUET_DIR := parquet
 THREAD_MODULO ?= 8
 TEXT_LIMIT ?= 100
 
 .PHONY: all download extract-csv database compress split \
-	download-parquet jsonl clean-build
+	download-parquet parquet jsonl clean-build
 
 all: split
 
@@ -91,6 +94,15 @@ $(PARQUET_DIR)/%.parquet:
 	curl --fail --location --retry 3 --retry-delay 5 --output "$@.part" "$(PARQUET_URL_BASE)/$(notdir $@)"
 	mv -f "$@.part" "$@"
 
+# The release assets, ready to be committed: Posts.parquet is split in pieces
+# under GitHub's 100 MB limit, the other tables are copied as they are.  They
+# live in the repository because release assets are sent without CORS headers
+# and web pages cannot fetch them; see preprocess/splitparquet.py.
+parquet: $(PARQUET_FILES)
+	$(PYTHON) preprocess/splitparquet.py \
+	  --input-dir "$(PARQUET_DIR)" \
+	  --output-dir "$(REPO_PARQUET_DIR)"
+
 # One run of the script writes the five .jsonl.gz files and the manifest, so
 # this is a phony target instead of one rule per output file.  The script
 # fails if a file grows past the size limit for a file in the repository.
@@ -104,7 +116,7 @@ jsonl: $(PARQUET_FILES)
 	  --source-release "$(RELEASE_TAG)"
 
 # Remove downloaded/extracted source and build intermediates, preserving the
-# two final .db.xz.00/.01 files and the JSONL sample.
+# two final .db.xz.00/.01 files, the JSONL sample and parquet/.
 clean-build:
 	rm -f "$(CSV_ARCHIVE)" "$(CSV_ARCHIVE).part" "$(DB)" "$(DB_TMP)" \
 	  "$(XZ_FILE)" "$(XZ_FILE).tmp" "$(SPLIT_PREFIX)"*

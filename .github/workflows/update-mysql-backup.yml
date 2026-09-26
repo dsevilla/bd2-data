@@ -18,12 +18,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read version from config
-        id: read_version
-        run: |
-          VERSION=$(grep '^version:' .github/config.yml | cut -d'"' -f2)
-          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Set up Git configuration
         run: |
           git config --global user.name "GitHub Actions Bot"
@@ -48,10 +42,12 @@ jobs:
             git push origin main
           fi
 
+      # No course year in the tag: the courses that still use this dump
+      # download it from a fixed URL.
       - name: Upload as release asset
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: mysql-backup-${{ steps.read_version.outputs.tag }}
+          tag_name: mysql-backup
           files: es.stackoverflow/mysql/es.stackoverflow.sql.gz
 
       # - name: 🔐 Log in to DockerHub
@@ -69,4 +65,4 @@ jobs:
       #     context: ./es.stackoverflow/mysql
       #     push: true
       #     platforms: linux/amd64,linux/arm64
-      #     tags: dsevilla/mysql-stackoverflow-dump:${{ steps.read_version.outputs.tag }}
+      #     tags: dsevilla/mysql-stackoverflow-dump:latest
