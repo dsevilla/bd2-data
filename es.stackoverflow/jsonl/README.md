@@ -143,3 +143,11 @@ mayor son 5,5 MB, así que no hace falta partirlos como sí ocurre con
 El *workflow* [`update-jsonl-sample`](../../.github/workflows/update-jsonl-sample.yml)
 hace lo mismo en CI, publica los ficheros como *release* `jsonl-sample-26-27` y
 confirma en el repositorio los que hayan cambiado.
+
+No reconstruye la muestra si no ha cambiado el origen:
+[`../source.json`](../source.json) dice de qué volcado de Stack Exchange sale el
+*release* (URL y sha256 del `.7z`; lo escribe y lo commitea el *workflow* que
+lo genera, y también se publica con él), y `manifest.json` guarda el del último
+`make jsonl`. Si coinciden, los
+parámetros son los mismos y los ficheros están, no se hace nada. `make jsonl
+FORCE=1` (o la opción `force` del *workflow*) la reconstruye de todos modos.

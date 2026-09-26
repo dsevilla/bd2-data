@@ -8,6 +8,11 @@
 # All start from the assets published in the release, not from the files
 # checked into this repository.  parquet.old/ is the previous course's
 # generator and data; nothing here reads or writes it.
+#
+# `make parquet` and `make jsonl` commit their output to the repository, so
+# they do nothing when it was already built from the Stack Exchange dump named
+# in source.json (written by the workflow that builds the release, and
+# committed with it).  Add FORCE=1 to rebuild anyway.
 
 REPOSITORY ?= dsevilla/bd2-data
 RELEASE_TAG ?= es.stackoverflow.data-26-27
@@ -36,6 +41,7 @@ PARQUET_NAMES := Posts.parquet Users.parquet Comments.parquet Votes.parquet Tags
 PARQUET_DIR := preprocess/data
 PARQUET_FILES := $(addprefix $(PARQUET_DIR)/,$(PARQUET_NAMES))
 PARQUET_URL_BASE := https://github.com/$(REPOSITORY)/releases/download/$(RELEASE_TAG)
+SOURCE_JSON := source.json
 JSONL_DIR := jsonl
 REPO_PARQUET_DIR := parquet
 THREAD_MODULO ?= 8
@@ -101,7 +107,10 @@ $(PARQUET_DIR)/%.parquet:
 parquet: $(PARQUET_FILES)
 	$(PYTHON) preprocess/splitparquet.py \
 	  --input-dir "$(PARQUET_DIR)" \
-	  --output-dir "$(REPO_PARQUET_DIR)"
+	  --output-dir "$(REPO_PARQUET_DIR)" \
+	  --source-json "$(SOURCE_JSON)" \
+	  --source-release "$(RELEASE_TAG)" \
+	  $(if $(FORCE),--force)
 
 # One run of the script writes the five .jsonl.gz files and the manifest, so
 # this is a phony target instead of one rule per output file.  The script
@@ -111,9 +120,11 @@ jsonl: $(PARQUET_FILES)
 	$(PYTHON) preprocess/parquettojsonl.py \
 	  --input-dir "$(PARQUET_DIR)" \
 	  --output-dir "$(JSONL_DIR)" \
+	  --source-json "$(SOURCE_JSON)" \
 	  --thread-modulo $(THREAD_MODULO) \
 	  --text-limit $(TEXT_LIMIT) \
-	  --source-release "$(RELEASE_TAG)"
+	  --source-release "$(RELEASE_TAG)" \
+	  $(if $(FORCE),--force)
 
 # Remove downloaded/extracted source and build intermediates, preserving the
 # two final .db.xz.00/.01 files, the JSONL sample and parquet/.

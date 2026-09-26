@@ -1,0 +1,12 @@
+30b02201ead94c6d40afed5f56ac820a3c1dff252e5dd032278e4bf9b426cc89  ../parquet.old/Comments.parquet
+14ca4982eae57c27fc5d440f1be7139ccee8e47e236893f45ca3bfce67e284d6  ../parquet.old/Posts1.parquet
+da13d5237f8a7d466e8c5623bc5f51096abdb2fd817f28fd4ef20ab69062b7a1  ../parquet.old/Posts2.parquet
+31c68f77a8bd79aee0d324649175d5503a64d7866446589cdd15c55571deae09  ../parquet.old/Posts3.parquet
+c425c3ed9c91d2f5224876b92dc3194d0eac34d08836025ca2158fdf040df814  ../parquet.old/Tags.parquet
+85569fe3e6dd64964732a4384d0e4bdd388f4c151f970d50ab62f77ad142d19a  ../parquet.old/Users.parquet
+8ba9b3e218c9cbaa48b363126b8ea679475e6a18a4da0f1519d78459cddebe88  ../parquet.old/Votes.parquet
+b205bca3049785067d601e6ce76b911bad4f1148fc99f833bc470ecbd5313fc7  ../parquet.old/Comments.pb
+01b8f620d1c7127690596871a9dd6cb69a066f22076c2185f6b6cdd4019735c6  ../parquet.old/Posts.pb
+50c7a3f20c7786dedb185fd64d7d47d5bc12e3c7b1f97d184787f362759b9093  ../parquet.old/Tags.pb
+be0abf3c37bff912e62c2e460991475e2c6c10a1a216a32bf3d19cda456acbf1  ../parquet.old/Users.pb
+aa5bf0f39a574c004133e64577cf485910bf32fb7154324c21c1d15cf5447160  ../parquet.old/Votes.pb

@@ -5,6 +5,11 @@ on:
     # Run on the first day of every month at 2:00 AM UTC
     - cron: '0 2 1 * *'
   workflow_dispatch:  # Allow manual triggering
+    inputs:
+      force:
+        description: 'Rebuild even if the Parquet files have not changed'
+        type: boolean
+        default: false
 
 jobs:
   update-mysql-backup:
@@ -18,22 +23,44 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The dump is built from the Parquet files in es.stackoverflow/parquet.old
+      # (see generate-mysql-db.ipynb).  source.sha256 lists the ones the
+      # committed dump was built from; if they are all unchanged the dump is
+      # kept as it is and nothing is committed.
+      - name: Check whether the source data changed
+        id: source
+        working-directory: es.stackoverflow/mysql
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" != "true" ] && sha256sum --check --quiet source.sha256; then
+            echo "The Parquet files are unchanged: keeping the committed dump."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Git configuration
+        if: steps.source.outputs.changed == 'true'
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
 
       - name: Run MySQL backup generation
+        if: steps.source.outputs.changed == 'true'
         run: |
           cd es.stackoverflow/mysql
           sudo sh ./ubuntu-script.sh
+          sha256sum ../parquet.old/*.parquet ../parquet.old/*.pb > source.sha256
 
       - name: Add new backup files to git
+        if: steps.source.outputs.changed == 'true'
         run: |
           cd es.stackoverflow/mysql
-          git add es.stackoverflow.sql.gz.*
+          git add es.stackoverflow.sql.gz.* source.sha256
 
       - name: Commit and push changes
+        if: steps.source.outputs.changed == 'true'
         run: |
           if git diff --cached --quiet; then
             echo "No changes to commit"
@@ -41,6 +68,13 @@ jobs:
             git commit -m "Update MySQL backup files - $(date +'%Y-%m-%d')."
             git push origin main
           fi
+
+      # The release asset is the whole file; when nothing was regenerated it
+      # is rebuilt from the parts committed in the repository.
+      - name: Rebuild the dump from the committed parts
+        if: steps.source.outputs.changed != 'true'
+        working-directory: es.stackoverflow/mysql
+        run: cat es.stackoverflow.sql.gz.[0-9][0-9] > es.stackoverflow.sql.gz
 
       # No course year in the tag: the courses that still use this dump
       # download it from a fixed URL.

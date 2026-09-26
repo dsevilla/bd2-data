@@ -37,6 +37,15 @@ The output directory receives one ``<Table>.jsonl.gz`` per table plus a
 ``manifest.json`` describing the sample.  The gzip stream is written with a
 zero timestamp so that an unchanged input produces byte-identical output and
 does not create empty commits.  Packaging is left to the CI workflow.
+
+The sample is not rebuilt when its *origin* has not changed.  The origin is the
+Stack Exchange dump the release was built from: ``source.json`` in the
+repository (dump URL and sha256, written by the workflow that builds the
+release), which ``--source-json`` reads and the manifest records.  If the
+manifest already has the same origin and parameters and its files are on disk,
+the run stops without touching anything, whatever the Parquet files' bytes
+are; ``--force`` rebuilds anyway.  Without a ``source.json`` the origin is
+unknown and the sample is always rebuilt.
 """
 
 from __future__ import annotations
@@ -319,6 +328,53 @@ def write_table(
 # ---------------------------------------------------------------------------
 
 
+def _parameters(thread_modulo: int, text_limit: int) -> dict[str, Any]:
+    return {
+        "thread_modulo": thread_modulo,
+        "text_limit": text_limit,
+        "truncated_columns": {
+            table: list(columns) for table, columns in TRUNCATED_COLUMNS.items()
+        },
+        "truncation_mark": TRUNCATION_MARK,
+    }
+
+
+def read_source(path: Path | None) -> dict[str, Any] | None:
+    """The origin recorded by the release, or None if it does not say."""
+
+    if path is None or not path.is_file():
+        return None
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+
+
+def is_up_to_date(
+    output_dir: Path,
+    source: dict[str, Any] | None,
+    thread_modulo: int,
+    text_limit: int,
+) -> bool:
+    """True if ``output_dir`` already holds the sample for this origin."""
+
+    if source is None:
+        return False
+    try:
+        manifest = json.loads((output_dir / "manifest.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return False
+    if manifest.get("source") != source:
+        return False
+    if manifest.get("parameters") != _parameters(thread_modulo, text_limit):
+        return False
+    collections: dict[str, Any] = manifest.get("collections", {})
+    if set(collections) != set(TABLES):
+        return False
+    for entry in collections.values():
+        path: Path = output_dir / entry["file"]
+        if not path.is_file() or path.stat().st_size != entry["gzip_bytes"]:
+            return False
+    return True
+
+
 def build_sample(
     input_dir: Path,
     output_dir: Path,
@@ -326,6 +382,7 @@ def build_sample(
     text_limit: int,
     batch_size: int = BATCH_SIZE,
     source_release: str = DEFAULT_SOURCE_RELEASE,
+    source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write every output file and return the manifest describing them."""
 
@@ -402,14 +459,8 @@ def build_sample(
         # byte-identical outputs, so that a rebuild that changes nothing
         # produces no commit at all.
         "source_release": source_release,
-        "parameters": {
-            "thread_modulo": thread_modulo,
-            "text_limit": text_limit,
-            "truncated_columns": {
-                table: list(columns) for table, columns in TRUNCATED_COLUMNS.items()
-            },
-            "truncation_mark": TRUNCATION_MARK,
-        },
+        "source": source,
+        "parameters": _parameters(thread_modulo, text_limit),
         "format": {
             "type": "jsonl.gz",
             "encoding": "utf-8",
@@ -482,6 +533,20 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--source-json",
+        type=Path,
+        default=None,
+        help=(
+            "source.json: the dump the release was built from (default: none, "
+            "the origin is unknown and the sample is always rebuilt)"
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="rebuild even if the sample already comes from the same dump",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=BATCH_SIZE,
@@ -502,6 +567,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--batch-size must be at least 1")
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    source: dict[str, Any] | None = read_source(cast(Path | None, args.source_json))
+    if source is None:
+        print("warning: no source.json, the origin is unknown", flush=True)
+    if not args.force and is_up_to_date(output_dir, source, thread_modulo, text_limit):
+        print(
+            f"{output_dir}: built from the same source dump as the release "
+            "(use --force to rebuild); nothing to do"
+        )
+        return 0
+
     manifest: dict[str, Any] = build_sample(
         input_dir,
         output_dir,
@@ -509,6 +584,7 @@ def main(argv: list[str] | None = None) -> int:
         text_limit,
         batch_size,
         cast(str, args.source_release),
+        source,
     )
     for table in TABLES:
         entry: dict[str, Any] = manifest["collections"][table]

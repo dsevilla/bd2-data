@@ -14,6 +14,16 @@ written with the options of ``csvtoparquet.writer_options`` (schema, Brotli,
 statistics, Bloom filters, ...) and checked against the input before the
 script succeeds.  Never split by ``Id`` range: that does not balance the sizes.
 
+Regenerating is skipped when the *origin* has not changed, so a run that would
+only rewrite the same data adds nothing to the git history.  The origin is the
+Stack Exchange dump the release was built from: ``source.json`` in the
+repository (dump URL and sha256, written by the workflow that builds the
+release), which ``--source-json`` reads.
+``manifest.json`` in the output directory records that origin, the split and
+the digest of every output file; the outputs are rebuilt only if the origin,
+the split or a file on disk differs from it, or with ``--force``.  Without a
+``source.json`` the origin is unknown and the outputs are always rebuilt.
+
 Example:
 
     python3 splitparquet.py --input-dir data --output-dir ../parquet
@@ -22,13 +32,15 @@ Example:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
+import json
 import multiprocessing as mp
 import re
 import shutil
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -38,6 +50,8 @@ from csvtoparquet import SORT_COLUMN, TABLES, writer_options
 # GitHub refuses pushes with files over 100 MB; stay clearly below it.
 MAX_FILE_BYTES: int = 95 * 1024 * 1024
 DEFAULT_SPLITS: dict[str, int] = {"Posts": 3}
+DEFAULT_SOURCE_RELEASE: str = "es.stackoverflow.data-26-27"
+MANIFEST_NAME: str = "manifest.json"
 
 
 def _row_group_sizes(metadata: pq.FileMetaData) -> list[int]:
@@ -128,6 +142,62 @@ def _verify_split(
                          f"{source.metadata.num_rows}")
 
 
+def _file_entry(path: Path) -> dict[str, int | str]:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return {"bytes": path.stat().st_size, "sha256": digest.hexdigest()}
+
+
+def read_source(path: Path | None) -> dict[str, Any] | None:
+    """The origin recorded by the release, or None if it does not say."""
+
+    if path is None or not path.is_file():
+        return None
+    return cast(dict[str, Any], json.loads(path.read_text()))
+
+
+def _is_up_to_date(
+    output_dir: Path, source: dict[str, Any] | None, split: dict[str, int]
+) -> bool:
+    """True if ``output_dir`` already holds the outputs for this origin."""
+
+    if source is None:
+        return False
+    try:
+        manifest = json.loads((output_dir / MANIFEST_NAME).read_text())
+    except (OSError, ValueError):
+        return False
+    if manifest.get("source") != source or manifest.get("split") != split:
+        return False
+    files: dict[str, dict[str, int | str]] = manifest.get("files", {})
+    on_disk: set[str] = {path.name for path in output_dir.glob("*.parquet")}
+    return on_disk == set(files) and all(
+        _file_entry(output_dir / name) == entry for name, entry in files.items()
+    )
+
+
+def _write_manifest(
+    output_dir: Path,
+    source_release: str,
+    source: dict[str, Any] | None,
+    split: dict[str, int],
+) -> None:
+    manifest = {
+        "source_release": source_release,
+        "source": source,
+        "split": split,
+        "files": {
+            path.name: _file_entry(path)
+            for path in sorted(output_dir.glob("*.parquet"))
+        },
+    }
+    (output_dir / MANIFEST_NAME).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+
+
 def _remove_stale(output_dir: Path, name: str) -> None:
     """Remove earlier outputs of ``name`` (``Posts.parquet``, ``Posts2.parquet``)."""
 
@@ -138,12 +208,28 @@ def _remove_stale(output_dir: Path, name: str) -> None:
 
 
 def prepare(
-    input_dir: Path, output_dir: Path, splits: dict[str, int], workers: int
-) -> None:
+    input_dir: Path,
+    output_dir: Path,
+    splits: dict[str, int],
+    workers: int,
+    source_release: str,
+    source: dict[str, Any] | None,
+    force: bool,
+) -> bool:
+    """Fill ``output_dir``; return False if it was already up to date."""
+
     output_dir.mkdir(parents=True, exist_ok=True)
     for name in TABLES:
         if not (input_dir / f"{name}.parquet").is_file():
             raise FileNotFoundError(f"{input_dir / f'{name}.parquet'}")
+
+    split: dict[str, int] = {name: splits.get(name, 1) for name in TABLES}
+    if source is None:
+        print("warning: no source.json, the origin is unknown", flush=True)
+    if not force and _is_up_to_date(output_dir, source, split):
+        print(f"{output_dir}: built from the same source dump as the release "
+              "(use --force to rebuild); nothing to do")
+        return False
 
     jobs: list[tuple[str, Path, Path, range]] = []
     plans: dict[str, list[tuple[Path, range]]] = {}
@@ -179,6 +265,8 @@ def prepare(
         for path, _ in outputs:
             print(f"  {path.name}: {path.stat().st_size / 1e6:,.1f} MB")
         print(f"{name}: {len(outputs)} pieces verified against the input")
+    _write_manifest(output_dir, source_release, source, split)
+    return True
 
 
 def _parse_split(value: str) -> tuple[str, int]:
@@ -215,6 +303,24 @@ def main(argv: list[str] | None = None) -> int:
         f"{', '.join(f'{k}={v}' for k, v in DEFAULT_SPLITS.items())})",
     )
     parser.add_argument(
+        "--source-json",
+        type=Path,
+        default=None,
+        help="source.json: the dump the release was built from "
+        "(default: none, the origin is unknown and everything is rebuilt)",
+    )
+    parser.add_argument(
+        "--source-release",
+        default=DEFAULT_SOURCE_RELEASE,
+        help="release tag the inputs come from, recorded in the manifest "
+        f"(default: {DEFAULT_SOURCE_RELEASE})",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="rebuild even if the source data is unchanged",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=4,
@@ -231,6 +337,9 @@ def main(argv: list[str] | None = None) -> int:
         cast(Path, args.output_dir),
         splits,
         cast(int, args.workers),
+        cast(str, args.source_release),
+        read_source(cast(Path | None, args.source_json)),
+        cast(bool, args.force),
     )
     return 0
 

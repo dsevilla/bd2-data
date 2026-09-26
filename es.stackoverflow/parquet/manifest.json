@@ -1,0 +1,45 @@
+{
+  "files": {
+    "Comments.parquet": {
+      "bytes": 45997852,
+      "sha256": "4bc6044c298a02d850b3042b0ebd4f69876b2a7b747d43f9ce5ffeb83165c452"
+    },
+    "Posts1.parquet": {
+      "bytes": 78369269,
+      "sha256": "ac66c956d09ab1ad935f5ac49d023ddb06aff8b9fc3fcca182cc426e9d8741bc"
+    },
+    "Posts2.parquet": {
+      "bytes": 40859149,
+      "sha256": "86f0ffef8968a8cfce366a49fd8b59522e1fd33afe1e67211c6967a842a6fdc3"
+    },
+    "Posts3.parquet": {
+      "bytes": 52099496,
+      "sha256": "8b63fb7c8a6177ad28e3bb8fd0ba90542660aa890bfc89d0a3fbc2068e3f49ce"
+    },
+    "Tags.parquet": {
+      "bytes": 50606,
+      "sha256": "8f2c6c48b473bfca37952f4c0a87211d33fbd1d0d9233623c1672257d12ec82d"
+    },
+    "Users.parquet": {
+      "bytes": 15820861,
+      "sha256": "0da4696fd0284e287db517113ab527df7be1ff827f4db54866c2d2295fe0dbf4"
+    },
+    "Votes.parquet": {
+      "bytes": 4953339,
+      "sha256": "d765d6a3fe8497745dfc6261c0a95e16fb05496760d34a28b4837734df82384d"
+    }
+  },
+  "source": {
+    "bytes": 548754064,
+    "sha256": "b53aa0259e6e66b5f9678569f1eabcb07246228b17924a1dd67f81e7fc14ae52",
+    "url": "https://archive.org/download/stackexchange_20260630_sakura/stackexchange_20260630/es.stackoverflow.com.7z"
+  },
+  "source_release": "es.stackoverflow.data-26-27",
+  "split": {
+    "Comments": 1,
+    "Posts": 3,
+    "Tags": 1,
+    "Users": 1,
+    "Votes": 1
+  }
+}

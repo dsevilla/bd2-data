@@ -48,4 +48,10 @@ los trozos son idénticos a la tabla original. El workflow
 [`update-repo-parquet.yml`](../../.github/workflows/update-repo-parquet.yml) hace
 lo mismo y sube el resultado; solo se lanza a mano.
 
+Para no añadir historia sin motivo, `manifest.json` guarda el volcado de Stack
+Exchange del que salen estos ficheros (el de [`../source.json`](../source.json)),
+el troceado y el sha256 de cada fichero. Si el *release* viene del mismo volcado
+no se regenera nada; `make parquet FORCE=1` (o la opción `force`
+del workflow) lo hace de todos modos.
+
 Los ficheros del curso 25-26 y su generador están en [`../parquet.old/`](../parquet.old/).

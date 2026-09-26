@@ -3,10 +3,17 @@ name: Update repository Parquet files
 # Copies the Parquet files of the data release into es.stackoverflow/parquet/,
 # splitting Posts.parquet under GitHub's 100 MB file limit.  Release assets are
 # served without CORS headers, so web pages fetch the committed copy instead
-# (raw.githubusercontent.com).  Manual only: the source is a pinned release and
-# every commit that changes these files adds ~200 MB to the repository history.
+# (raw.githubusercontent.com).  Manual only, and it does nothing unless
+# es.stackoverflow/source.json names a different Stack Exchange dump than the
+# one the files in the repository were built from: every commit that changes
+# them adds ~200 MB to the history.
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if the release comes from the same dump as the current files'
+        type: boolean
+        default: false
 
 jobs:
   update-repo-parquet:
@@ -39,6 +46,8 @@ jobs:
       # es.stackoverflow/parquet/.  The pieces are checked against the release
       # files before the step succeeds.
       - name: Build the repository Parquet files
+        env:
+          FORCE: ${{ inputs.force && '1' || '' }}
         run: make -C es.stackoverflow parquet
 
       - name: Add the files to git

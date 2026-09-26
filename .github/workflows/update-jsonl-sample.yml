@@ -2,10 +2,16 @@ name: Update JSONL sample
 
 on:
   schedule:
-    # Run on the first day of every month at 4:00 AM UTC, after the Parquet
-    # and SQLite jobs have refreshed what this one reads.
+    # Run on the first day of every month at 4:00 AM UTC.  It reads the data
+    # release and does nothing unless that release comes from a different
+    # Stack Exchange dump than the sample in the repository.
     - cron: '0 4 1 * *'
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if the release comes from the same dump as the current files'
+        type: boolean
+        default: false
 
 jobs:
   update-jsonl-sample:
@@ -41,9 +47,12 @@ jobs:
           git config --global user.email "actions@github.com"
 
       # Downloads the Parquet assets of the data release and writes
-      # es.stackoverflow/jsonl/. Identical input gives byte-identical output,
-      # so a run that changes nothing leaves nothing to commit.
+      # es.stackoverflow/jsonl/, unless es.stackoverflow/source.json names the
+      # dump the sample already comes from: then nothing is rebuilt and there
+      # is nothing to commit.
       - name: Build the JSONL sample
+        env:
+          FORCE: ${{ inputs.force && '1' || '' }}
         run: make -C es.stackoverflow jsonl
 
       - name: Add the sample to git

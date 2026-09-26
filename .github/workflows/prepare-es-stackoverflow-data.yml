@@ -29,6 +29,34 @@ jobs:
           FORCE_DOWNLOAD: '1'
         run: sh preprocess.sh
 
+      # Which dump this release was built from.  It is published with the
+      # release and committed at the end, so the repository records it too.
+      # The workflows that copy the release into the repository
+      # (update-repo-parquet.yml, update-jsonl-sample.yml) compare it with the
+      # dump they built from last time and skip the run when it is the same.
+      - name: Record the source dump
+        working-directory: es.stackoverflow/preprocess
+        run: |
+          python3 - <<'EOF'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          archive = Path("data/es.stackoverflow.com.7z")
+          digest = hashlib.sha256()
+          with archive.open("rb") as stream:
+              while chunk := stream.read(1 << 20):
+                  digest.update(chunk)
+          source = {
+              "url": Path("URL").read_text().splitlines()[0],
+              "sha256": digest.hexdigest(),
+              "bytes": archive.stat().st_size,
+          }
+          Path("../source.json").write_text(
+              json.dumps(source, indent=2, sort_keys=True) + "\n"
+          )
+          EOF
+
       - name: Install Parquet conversion dependencies
         run: python -m pip install --disable-pip-version-check -r es.stackoverflow/preprocess/requirements.txt
 
@@ -70,4 +98,19 @@ jobs:
             es.stackoverflow/preprocess/es.stackoverflow.csv.tar.gz
             es.stackoverflow/preprocess/data/*.csv.gz
             es.stackoverflow/preprocess/data/*.parquet
+            es.stackoverflow/source.json
             es.stackoverflow/preprocess/es.stackoverflow.parquet.tar.gz
+
+      # Only after the release is published, so the repository never names a
+      # dump that has no release.
+      - name: Commit the source dump record
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git add es.stackoverflow/source.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Record the source dump of es.stackoverflow.data-26-27 - $(date +'%Y-%m-%d')."
+            git push origin main
+          fi

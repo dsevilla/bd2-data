@@ -163,7 +163,10 @@ The workflow [`prepare-es-stackoverflow-data.yml`](../../.github/workflows/prepa
 performs the download, XML-to-CSV conversion, CSV gzip compression, and
 CSV-to-Parquet conversion. It publishes the uncompressed CSV archive, every
 individual `.csv.gz`, every Parquet file, and the complete Parquet tarball as
-release assets.
+release assets, plus `source.json`: the URL, size and sha256 of the dump archive
+the release was built from. After publishing the release, the workflow also
+commits that file as [`../source.json`](../source.json), so the repository
+records which dump the current data comes from. Nobody edits it by hand.
 
 ### Parquet files in the repository
 
@@ -184,6 +187,20 @@ The [`update-repo-parquet.yml`](../../.github/workflows/update-repo-parquet.yml)
 workflow does the same and commits the result; it is manual because every
 change adds about 200 MB to the repository history. The previous course's
 generator and data live in [`../parquet.old/`](../parquet.old/).
+
+To keep that history from growing for nothing, the jobs that commit derived
+files (`make parquet`, `make jsonl`, and `update-mysql-backup.yml`) start from
+the *origin* of the data and do nothing when it has not changed. For the two
+that read the release, the origin is the Stack Exchange dump it was built from:
+[`../source.json`](../source.json) names it, and `parquet/manifest.json` and
+`jsonl/manifest.json` record the one they were built from. They are rebuilt only if the dump, their
+parameters or their files differ, or with `FORCE=1` (the `force` input of the
+workflows). The check is on the dump, not on the release's Parquet bytes, so
+re-running `prepare-es-stackoverflow-data.yml` with the same dump does not
+trigger a rebuild; after changing the converter itself, use `FORCE=1`. Without
+`source.json` the origin is unknown and everything is always rebuilt. The MySQL dump
+is built from the fixed files in `parquet.old/`; `mysql/source.sha256` lists
+their checksums.
 
 ## Conversion behavior
 
