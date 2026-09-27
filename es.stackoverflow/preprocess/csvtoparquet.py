@@ -278,6 +278,34 @@ COMMENTS_SCHEMA: pa.Schema = pa.schema(
 )
 
 
+# PostLinks relates two posts: ``LinkTypeId`` 1 is a plain link written in a
+# post and 3 marks the question ``PostId`` as a duplicate of
+# ``RelatedPostId``.  The duplicates are pairs chosen by the community, so
+# they serve as relevance judgements for similarity search.  Neither end is
+# nullable: a link always joins two posts, and in the 2026-06-30 dump both
+# ends of every link are present in Posts.
+POSTLINKS_SCHEMA: pa.Schema = pa.schema(
+    [
+        pa.field("Id", pa.int64(), nullable=False,
+                 metadata={b"role": b"primary_key"}),
+        pa.field("CreationDate", pa.timestamp("ms"), nullable=False),
+        pa.field("LinkTypeId", pa.int8(), nullable=False),
+        pa.field(
+            "PostId",
+            pa.int64(),
+            nullable=False,
+            metadata={b"role": b"foreign_key", b"references": b"Posts.Id"},
+        ),
+        pa.field(
+            "RelatedPostId",
+            pa.int64(),
+            nullable=False,
+            metadata={b"role": b"foreign_key", b"references": b"Posts.Id"},
+        ),
+    ]
+)
+
+
 @dataclass(frozen=True)
 class TableSpec:
     schema: pa.Schema
@@ -384,6 +412,13 @@ TABLES: dict[str, TableSpec] = {
         # PostId: "comments on this post". UserId: "comments by this user"
         # (unlike Votes.UserId, Comments always attributes its author).
         bloom_filter_columns=("PostId", "UserId"),
+    ),
+    "PostLinks": TableSpec(
+        POSTLINKS_SCHEMA,
+        {},
+        # PostId: "links from this post". RelatedPostId: "duplicates of this
+        # question", the lookup a similarity search is evaluated with.
+        bloom_filter_columns=("PostId", "RelatedPostId"),
     ),
 }
 
@@ -643,7 +678,7 @@ def _convert_table_worker(task: TableTask) -> Path:
 
 
 def _default_worker_count() -> int:
-    """Use four workers per CPU, bounded by the five independent tables."""
+    """Use four workers per CPU, bounded by the number of independent tables."""
 
     available_cpus: int = os.cpu_count() or 1
     return min(len(TABLES), available_cpus * 4)

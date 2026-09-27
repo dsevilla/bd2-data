@@ -12,8 +12,8 @@ DATA_DIR=${DATA_DIR:-$DEFAULT_DATA_DIR}
 URL_FILE=${URL_FILE:-"${SCRIPT_DIR%/}/URL"}
 ARCHIVE_PATH=${ARCHIVE_PATH:-"$DATA_DIR/es.stackoverflow.com.7z"}
 
-INPUTS="$DATA_DIR/Posts.xml $DATA_DIR/Votes.xml $DATA_DIR/Users.xml $DATA_DIR/Tags.xml $DATA_DIR/Comments.xml"
-OUTPUTS="$DATA_DIR/Posts.csv $DATA_DIR/Votes.csv $DATA_DIR/Users.csv $DATA_DIR/Tags.csv $DATA_DIR/Comments.csv"
+INPUTS="$DATA_DIR/Posts.xml $DATA_DIR/Votes.xml $DATA_DIR/Users.xml $DATA_DIR/Tags.xml $DATA_DIR/Comments.xml $DATA_DIR/PostLinks.xml"
+OUTPUTS="$DATA_DIR/Posts.csv $DATA_DIR/Votes.csv $DATA_DIR/Users.csv $DATA_DIR/Tags.csv $DATA_DIR/Comments.csv $DATA_DIR/PostLinks.csv"
 
 inputs_present() {
     for input in $INPUTS; do
@@ -92,5 +92,6 @@ $DATA_DIR/Votes.xml $DATA_DIR/Votes.csv
 $DATA_DIR/Users.xml $DATA_DIR/Users.csv
 $DATA_DIR/Tags.xml $DATA_DIR/Tags.csv
 $DATA_DIR/Comments.xml $DATA_DIR/Comments.csv
+$DATA_DIR/PostLinks.xml $DATA_DIR/PostLinks.csv
 EOF
 fi

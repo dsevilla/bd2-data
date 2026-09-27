@@ -77,16 +77,16 @@ jobs:
         run: |
           set -eu
           tar -czf es.stackoverflow.parquet.tar.gz -C data \
-            Posts.parquet Votes.parquet Users.parquet Tags.parquet Comments.parquet
+            Posts.parquet Votes.parquet Users.parquet Tags.parquet Comments.parquet PostLinks.parquet
 
       - name: Package processed XML and CSV files
         working-directory: es.stackoverflow/preprocess
         run: |
           set -eu
           tar -czf es.stackoverflow.xml.tar.gz -C data \
-            Posts.xml Votes.xml Users.xml Tags.xml Comments.xml
+            Posts.xml Votes.xml Users.xml Tags.xml Comments.xml PostLinks.xml
           tar -czf es.stackoverflow.csv.tar.gz -C data \
-            Posts.csv Votes.csv Users.csv Tags.csv Comments.csv
+            Posts.csv Votes.csv Users.csv Tags.csv Comments.csv PostLinks.csv
 
       - name: Upload data release assets
         uses: softprops/action-gh-release@v3

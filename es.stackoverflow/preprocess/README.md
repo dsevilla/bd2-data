@@ -32,7 +32,7 @@ Authoritative links:
 
 ## Files and workflow
 
-The current pipeline processes these five files:
+The current pipeline processes these six files:
 
 | XML input | CSV output | Contents |
 | --- | --- | --- |
@@ -41,6 +41,7 @@ The current pipeline processes these five files:
 | `Users.xml` | `Users.csv` | User records |
 | `Tags.xml` | `Tags.csv` | Tag records |
 | `Comments.xml` | `Comments.csv` | Comments on posts |
+| `PostLinks.xml` | `PostLinks.csv` | Links between posts, including duplicates |
 
 ### CSV to Parquet
 
@@ -78,9 +79,9 @@ Each sorted Polars batch is therefore cast to the declared Arrow schema and
 written directly to the final Parquet row group. This preserves the exact
 schema without materializing the complete table in Python.
 
-The five independent tables are converted in parallel with Python's
+The six independent tables are converted in parallel with Python's
 `ProcessPoolExecutor`; the default is four workers per CPU, bounded by the
-five available table tasks. Each process uses one Polars thread by default to
+six available table tasks. Each process uses one Polars thread by default to
 avoid nested thread-pool oversubscription; set `POLARS_MAX_THREADS` explicitly
 if a different balance is appropriate for a local run. Parquet uses Brotli
 compression at level 11, row groups of 100,000 rows, statistics, and the
@@ -98,7 +99,7 @@ python3 csvtoparquet.py --input-dir data --output-dir data --workers 2
 ```
 
 This produces only `Posts.parquet`, `Votes.parquet`, `Users.parquet`,
-`Tags.parquet`, and `Comments.parquet`. The CI workflow packages those five
+`Tags.parquet`, `Comments.parquet`, and `PostLinks.parquet`. The CI workflow packages those six
 files as `es.stackoverflow.parquet.tar.gz` for distribution.
 
 To check the conversion locally, run:
@@ -115,8 +116,11 @@ also prints means and the `VoteTypeId` distribution as a quick sanity report. It
 only the relevant numeric columns from Parquet; the Parquet row count, schema,
 and null counts come from its metadata where possible.
 
-The archive also contains files such as `Badges.xml`, `PostHistory.xml`, and
-`PostLinks.xml`; they are not currently converted by `preprocess.sh`.
+The archive also contains files such as `Badges.xml` and `PostHistory.xml`;
+they are not currently converted by `preprocess.sh`. `PostLinks.xml` is
+converted because its duplicate links (`LinkTypeId` 3: `PostId` is a duplicate
+of `RelatedPostId`) are relevance judgements chosen by the community, used to
+evaluate the similarity search of the vector-search sessions.
 
 Run the normal workflow from this directory:
 
@@ -127,7 +131,7 @@ make
 
 This builds the preprocessing container, downloads the archive from [`URL`](URL)
 if the required XML files are missing, extracts the XML files directly into
-`preprocess/data/`, and runs the five conversions. The generated
+`preprocess/data/`, and runs the six conversions. The generated
 `preprocess/data/*.csv` files and the downloaded archive are ignored by Git.
 The archive is large, so the download is reused on subsequent runs.
 The Makefile creates `preprocess/data/` before Docker starts and checks that it
@@ -281,7 +285,7 @@ community activity.
 
 ## Code layout
 
-- [`preprocess.sh`](preprocess.sh) runs the five conversions in parallel.
+- [`preprocess.sh`](preprocess.sh) runs the six conversions in parallel.
 - [`xmltocsv.py`](xmltocsv.py) handles command-line arguments and the two-pass
   conversion.
 - [`schemaextract.py`](schemaextract.py) discovers the file-wide attribute

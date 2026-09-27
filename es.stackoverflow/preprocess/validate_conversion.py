@@ -42,6 +42,7 @@ SUMMARY_COLUMNS: dict[str, tuple[str, ...]] = {
     "Users": ("DownVotes", "Reputation", "UpVotes", "Views"),
     "Tags": ("Count",),
     "Comments": ("Score",),
+    "PostLinks": ("LinkTypeId",),
 }
 
 
